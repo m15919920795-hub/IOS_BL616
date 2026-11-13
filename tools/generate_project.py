@@ -43,6 +43,7 @@ def config_list(name, common, target):
         if name == "project":
             settings.update(GCC_OPTIMIZATION_LEVEL="0" if mode == "Debug" else "s",
                             DEBUG_INFORMATION_FORMAT="dwarf" if mode == "Debug" else "dwarf-with-dsym",
+                            ONLY_ACTIVE_ARCH="YES" if mode == "Debug" else "NO",
                             ENABLE_TESTABILITY="YES" if mode == "Debug" else "NO")
         refs.append(add(name + mode, "XCBuildConfiguration", buildSettings=settings, name=mode))
     return add(name + "configs", "XCConfigurationList", buildConfigurations=refs,
