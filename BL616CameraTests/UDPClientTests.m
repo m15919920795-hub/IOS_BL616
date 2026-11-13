@@ -1,6 +1,7 @@
 #import <XCTest/XCTest.h>
 #import <UIKit/UIKit.h>
-#import <CocoaAsyncSocket/GCDAsyncUdpSocket.h>
+@import CocoaAsyncSocket;
+#include <string.h>
 #import "HBUDPClient.h"
 #import "JPEGRenderer.h"
 

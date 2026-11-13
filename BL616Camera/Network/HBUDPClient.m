@@ -1,6 +1,6 @@
 #import "HBUDPClient.h"
 #import "HBProtocol.h"
-#import <CocoaAsyncSocket/GCDAsyncUdpSocket.h>
+@import CocoaAsyncSocket;
 #import <arpa/inet.h>
 
 static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.systemUptime * 1000.0); }
