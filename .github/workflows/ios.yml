@@ -1,0 +1,44 @@
+name: iOS build and protocol tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tools/test_core.sh
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select simulator
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json, subprocess
+          devices = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '--json']))['devices']
+          for runtime in sorted(devices, reverse=True):
+              if '.iOS-' not in runtime:
+                  continue
+              for device in devices[runtime]:
+                  if device['name'].startswith('iPhone'):
+                      print('IOS_SIMULATOR=' + device['udid'])
+                      raise SystemExit(0)
+          raise SystemExit('No iPhone simulator is installed')
+          PY
+      - name: Build and test
+        run: |
+          xcodebuild -project BL616Camera.xcodeproj -scheme BL616Camera \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" \
+            -derivedDataPath "$RUNNER_TEMP/BL616CameraDerivedData" \
+            -resultBundlePath "$RUNNER_TEMP/BL616Camera.xcresult" \
+            CODE_SIGNING_ALLOWED=NO test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-test-results
+          path: ${{ runner.temp }}/BL616Camera.xcresult
