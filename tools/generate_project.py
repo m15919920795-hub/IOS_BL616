@@ -53,13 +53,20 @@ def config_list(name, common, target):
 def build():
     OBJECTS.clear()
     app_sources, test_sources = [], []
+    app_resources, test_resources = [], []
     kinds = {".m": "sourcecode.c.objc", ".c": "sourcecode.c.c", ".h": "sourcecode.c.h", ".plist": "text.plist.xml"}
 
     def group(directory):
         children = []
         for path in sorted((ROOT / directory).iterdir()):
             relative = path.relative_to(ROOT)
-            if path.is_dir():
+            if path.is_dir() and path.suffix == ".xcassets":
+                ref = add(str(relative), "PBXFileReference", lastKnownFileType="folder.assetcatalog",
+                          path=path.name, sourceTree="<group>")
+                children.append(ref)
+                build_ref = add(str(relative) + "build", "PBXBuildFile", fileRef=ref)
+                (test_resources if directory.parts[0] == "BL616CameraTests" else app_resources).append(build_ref)
+            elif path.is_dir():
                 children.append(group(relative))
             else:
                 ref = add(str(relative), "PBXFileReference", lastKnownFileType=kinds[path.suffix],
@@ -90,13 +97,15 @@ def build():
     app_frameworks.append(add("app_cocoa", "PBXBuildFile", productRef=cocoa_product))
     test_frameworks = [add("test_cocoa", "PBXBuildFile", productRef=cocoa_product)]
     phases = {}
-    for target, sources, frameworks in (("app", app_sources, app_frameworks), ("test", test_sources, test_frameworks)):
+    for target, sources, frameworks, resources in (
+            ("app", app_sources, app_frameworks, app_resources),
+            ("test", test_sources, test_frameworks, test_resources)):
         phases[target] = [add(target + "sources", "PBXSourcesBuildPhase", buildActionMask=2147483647,
                              files=sources, runOnlyForDeploymentPostprocessing=0),
                           add(target + "frameworks", "PBXFrameworksBuildPhase", buildActionMask=2147483647,
                              files=frameworks, runOnlyForDeploymentPostprocessing=0),
                           add(target + "resources", "PBXResourcesBuildPhase", buildActionMask=2147483647,
-                             files=[], runOnlyForDeploymentPostprocessing=0)]
+                             files=resources, runOnlyForDeploymentPostprocessing=0)]
     project_configs = config_list("project", dict(
         CLANG_ENABLE_MODULES="YES", CLANG_ENABLE_OBJC_ARC="YES", GCC_C_LANGUAGE_STANDARD="c11",
         IPHONEOS_DEPLOYMENT_TARGET="15.0", SDKROOT="iphoneos", GCC_WARN_INHIBIT_ALL_WARNINGS="NO",
@@ -106,6 +115,7 @@ def build():
                                        "$(SRCROOT)/BL616Camera/Network", "$(SRCROOT)/BL616Camera/UI", "$(SRCROOT)/BL616Camera/Video"])
     app_configs = config_list("app", common, dict(
         INFOPLIST_FILE="BL616Camera/Resources/Info.plist", GENERATE_INFOPLIST_FILE="NO",
+        ASSETCATALOG_COMPILER_APPICON_NAME="AppIcon",
         PRODUCT_BUNDLE_IDENTIFIER="com.guanxukeji.BL616Camera", PRODUCT_NAME="$(TARGET_NAME)",
         CURRENT_PROJECT_VERSION="1", MARKETING_VERSION="0.1.0"))
     test_configs = config_list("test", common, dict(

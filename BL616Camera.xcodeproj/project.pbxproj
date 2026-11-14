@@ -98,6 +98,16 @@ DD0F733C415D20C38A516783 = {
 "path" = "Network";
 "sourceTree" = "<group>";
 };
+BC0847BDA5DE1A32A6B3916B = {
+"isa" = "PBXFileReference";
+"lastKnownFileType" = "folder.assetcatalog";
+"path" = "Assets.xcassets";
+"sourceTree" = "<group>";
+};
+4C083A260F99151EFA032874 = {
+"isa" = "PBXBuildFile";
+"fileRef" = BC0847BDA5DE1A32A6B3916B;
+};
 A7B6004A1B17E60F8D4C9884 = {
 "isa" = "PBXFileReference";
 "lastKnownFileType" = "text.plist.xml";
@@ -106,7 +116,7 @@ A7B6004A1B17E60F8D4C9884 = {
 };
 50F7C338EB4450B4633B4B1B = {
 "isa" = "PBXGroup";
-"children" = (A7B6004A1B17E60F8D4C9884);
+"children" = (BC0847BDA5DE1A32A6B3916B, A7B6004A1B17E60F8D4C9884);
 "path" = "Resources";
 "sourceTree" = "<group>";
 };
@@ -257,7 +267,7 @@ C5F699B373C5EB12A87BB50E = {
 06F5DC629BD46AAFD46564D1 = {
 "isa" = "PBXResourcesBuildPhase";
 "buildActionMask" = 2147483647;
-"files" = ();
+"files" = (4C083A260F99151EFA032874);
 "runOnlyForDeploymentPostprocessing" = 0;
 };
 9F3002A5D69B22D357A58AA9 = {
@@ -328,6 +338,7 @@ E9B2E96ABC5F6856F2BE79CF = {
 "HEADER_SEARCH_PATHS" = ("$(inherited)", "$(SRCROOT)/BL616Camera/App", "$(SRCROOT)/BL616Camera/Core", "$(SRCROOT)/BL616Camera/Network", "$(SRCROOT)/BL616Camera/UI", "$(SRCROOT)/BL616Camera/Video");
 "INFOPLIST_FILE" = "BL616Camera/Resources/Info.plist";
 "GENERATE_INFOPLIST_FILE" = "NO";
+"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
 "PRODUCT_BUNDLE_IDENTIFIER" = "com.guanxukeji.BL616Camera";
 "PRODUCT_NAME" = "$(TARGET_NAME)";
 "CURRENT_PROJECT_VERSION" = "1";
@@ -343,6 +354,7 @@ E9B2E96ABC5F6856F2BE79CF = {
 "HEADER_SEARCH_PATHS" = ("$(inherited)", "$(SRCROOT)/BL616Camera/App", "$(SRCROOT)/BL616Camera/Core", "$(SRCROOT)/BL616Camera/Network", "$(SRCROOT)/BL616Camera/UI", "$(SRCROOT)/BL616Camera/Video");
 "INFOPLIST_FILE" = "BL616Camera/Resources/Info.plist";
 "GENERATE_INFOPLIST_FILE" = "NO";
+"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
 "PRODUCT_BUNDLE_IDENTIFIER" = "com.guanxukeji.BL616Camera";
 "PRODUCT_NAME" = "$(TARGET_NAME)";
 "CURRENT_PROJECT_VERSION" = "1";

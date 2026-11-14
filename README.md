@@ -93,5 +93,10 @@ GitHub Actions 会运行协议检查和 iOS 模拟器 XCTest，包括连接、ST
 另覆盖图像来源端口与指令端口不同、首帧序号大于 1，以及畸形数据的原始收包诊断。
 Xcode 工程由 `tools/generate_project.py` 生成；增删源文件后运行该脚本，提交生成结果。
 
+AppIcon 使用黑白 Power Craze 车标，已配置 iPhone、iPad 和 App Store 所需尺寸。
+资源位于 `BL616Camera/Resources/Assets.xcassets/AppIcon.appiconset`，由工程资源阶段编译。
+更换图标时，安装 Pillow 后运行 `python3 tools/generate_app_icons.py /path/to/square-icon.png`，
+并提交生成的 PNG 和 Contents.json；`python3 tools/generate_app_icons.py --check` 可校验尺寸与不透明格式。
+
 这些测试使用协议夹具和回环模拟设备。与真实 BL616 的互通、帧率、延迟、弱信号表现及
 Wi-Fi 6 链路仍需要真机联调；协议来自当前 SDK 库的实现核对，详见协议文档。
