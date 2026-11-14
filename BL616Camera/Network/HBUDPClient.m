@@ -9,11 +9,14 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     dispatch_queue_t _queue;
     dispatch_source_t _timer;
     GCDAsyncUdpSocket *_socket;
+    NSData *_commandAddress;
+    NSString *_deviceHost, *_lastSource, *_firstPacket;
     HBReceiver _receiver;
     HBClientState _state;
     uint64_t _generation, _startAt, _startDeadline, _lastStart, _stopUntil;
     uint64_t _lastFrame, _lastPublished, _lastDelivered;
     uint64_t _packets, _frames, _invalid, _dropped;
+    uint64_t _datagrams, _receivedBytes, _startDatagrams;
     BOOL _seenFirstFragment;
     uint16_t _localPort;
     NSString *_detail;
@@ -43,7 +46,9 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     if (message) _detail = [message copy];
     NSDictionary *status = @{@"state": @(_state), @"generation": @(_generation),
         @"detail": _detail ?: @"", @"localPort": @(_localPort), @"packets": @(_packets),
-        @"frames": @(_frames), @"invalid": @(_invalid), @"dropped": @(_dropped)};
+        @"frames": @(_frames), @"invalid": @(_invalid), @"dropped": @(_dropped),
+        @"datagrams": @(_datagrams), @"receivedBytes": @(_receivedBytes),
+        @"lastSource": _lastSource ?: @"—", @"firstPacket": _firstPacket ?: @"—"};
     _lastPublished = HBNow();
     dispatch_async(dispatch_get_main_queue(), ^{ [self.delegate client:self didUpdateStatus:status]; });
 }
@@ -52,6 +57,8 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     [_socket setDelegate:nil];
     [_socket close];
     _socket = nil;
+    _commandAddress = nil;
+    _deviceHost = nil;
     if (_timer) { dispatch_source_cancel(_timer); _timer = nil; }
     hb_receiver_reset(&_receiver);
     _pendingJPEG = nil;
@@ -66,9 +73,10 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
 }
 
 - (void)sendCommand:(BOOL)start {
-    if (!_socket.isConnected) return;
+    if (!_socket || _socket.isClosed || !_commandAddress) return;
     uint8_t bytes[4]; hb_write_command(bytes, start);
-    [_socket sendData:[NSData dataWithBytes:bytes length:sizeof(bytes)] withTimeout:1 tag:start ? 1 : 2];
+    [_socket sendData:[NSData dataWithBytes:bytes length:sizeof(bytes)] toAddress:_commandAddress
+         withTimeout:1 tag:start ? 1 : 2];
 }
 
 - (void)connectToHost:(NSString *)host remotePort:(uint16_t)remotePort localPort:(uint16_t)localPort {
@@ -83,24 +91,34 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
         }
         self->_generation++;
         self->_packets = self->_frames = self->_invalid = self->_dropped = 0;
+        self->_datagrams = self->_receivedBytes = 0;
+        self->_lastSource = self->_firstPacket = nil;
+        self->_deviceHost = [address copy];
+        struct sockaddr_in endpoint = {0};
+        endpoint.sin_len = sizeof(endpoint);
+        endpoint.sin_family = AF_INET;
+        endpoint.sin_port = htons(remotePort);
+        endpoint.sin_addr = ip;
+        self->_commandAddress = [NSData dataWithBytes:&endpoint length:sizeof(endpoint)];
         self->_state = HBClientConnecting;
         [self publish:@"正在绑定本地 UDP 端口…"];
         self->_socket = [[GCDAsyncUdpSocket alloc] initWithDelegate:self delegateQueue:self->_queue];
         [self->_socket setIPv6Enabled:NO];
+        [self->_socket setMaxReceiveIPv4BufferSize:UINT16_MAX];
         NSError *error = nil;
-        if (![self->_socket bindToPort:localPort error:&error] ||
-            ![self->_socket connectToHost:address onPort:remotePort error:&error]) {
-            [self fail:[NSString stringWithFormat:@"UDP 初始化失败：%@", error.localizedDescription ?: @"未知错误"]];
+        if (![self->_socket bindToPort:localPort error:&error]) {
+            [self fail:[NSString stringWithFormat:@"无法监听本地端口 %u：%@。请先关闭 UDP 助手等占用此端口的应用",
+                        (unsigned)localPort, error.localizedDescription ?: @"未知错误"]];
+            return;
         }
+        [self beginSession];
     });
 }
 
-- (void)udpSocket:(GCDAsyncUdpSocket *)sock didConnectToAddress:(NSData *)address {
-    (void)address;
-    if (sock != _socket || _state != HBClientConnecting) return;
+- (void)beginSession {
     NSError *error = nil;
-    if (![sock beginReceiving:&error]) { [self fail:error.localizedDescription]; return; }
-    _localPort = sock.localPort;
+    if (![_socket beginReceiving:&error]) { [self fail:error.localizedDescription]; return; }
+    _localPort = _socket.localPort;
     _state = HBClientReady;
     [self publish:@"UDP 会话就绪；尚未验证设备在线"];
     _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
@@ -120,6 +138,8 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
         self->_lastDelivered = 0;
         self->_seenFirstFragment = NO;
         self->_lastStart = 0;
+        self->_startDatagrams = self->_datagrams;
+        self->_firstPacket = nil;
         self->_startAt = HBNow() + 150;
         self->_startDeadline = self->_startAt + 5000;
         self->_state = HBClientStarting;
@@ -156,7 +176,7 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
         self->_pendingJPEG = nil;
         self->_state = HBClientDisconnecting;
         [self publish:@"正在关闭 UDP；已清理本地画面和队列"];
-        if (self->_socket.isConnected) {
+        if (self->_socket && !self->_socket.isClosed) {
             [self sendCommand:NO]; [self sendCommand:NO]; [self sendCommand:NO];
             [self->_socket closeAfterSending];
         } else {
@@ -171,7 +191,8 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     uint8_t bytes[48 + HB_BITMAP_SIZE];
     size_t length = hb_write_ack(bytes, sizeof(bytes), frame->info.sequence, frame->status,
                                  frame->bitmap, frame->info.count);
-    if (length) [_socket sendData:[NSData dataWithBytes:bytes length:length] withTimeout:0.3 tag:3];
+    if (length) [_socket sendData:[NSData dataWithBytes:bytes length:length] toAddress:_commandAddress
+                     withTimeout:0.3 tag:3];
 }
 
 - (void)deliverJPEG:(NSData *)jpeg {
@@ -196,7 +217,12 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     uint64_t now = HBNow();
     if (_state == HBClientStarting) {
         if (now >= _startDeadline) {
-            [self stopOnQueue:@"开启超时：未收到完整图像，请检查设备 IP、摄像头和本地网络权限"];
+            NSString *message = @"开启超时：未收到设备 UDP 数据，请检查设备 IP、本地网络权限和端口占用";
+            if (_seenFirstFragment)
+                message = @"开启超时：已收到有效分片，但未收齐完整图像";
+            else if (_datagrams > _startDatagrams)
+                message = @"开启超时：已收到 UDP 数据，但未识别为有效 HiBooster 分片，请查看首包";
+            [self stopOnQueue:message];
             return;
         }
         if (!_seenFirstFragment && now >= _startAt && (!_lastStart || now - _lastStart >= 100)) {
@@ -226,12 +252,25 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
 
 - (void)udpSocket:(GCDAsyncUdpSocket *)sock didReceiveData:(NSData *)data
       fromAddress:(NSData *)address withFilterContext:(id)filterContext {
-    (void)address; (void)filterContext;
-    if (sock != _socket || (_state != HBClientStarting && _state != HBClientStreaming)) return;
-    /* Connected UDP filters the remote IP/port in GCDAsyncUdpSocket. */
+    (void)filterContext;
+    if (sock != _socket || _state == HBClientDisconnected || _state == HBClientDisconnecting) return;
+    // Accept the configured camera IP even when images use a different source port.
+    if (![[GCDAsyncUdpSocket hostFromAddress:address] isEqualToString:_deviceHost]) return;
+    _datagrams++;
+    _receivedBytes += data.length;
+    _lastSource = [NSString stringWithFormat:@"%@:%u", _deviceHost,
+                   (unsigned)[GCDAsyncUdpSocket portFromAddress:address]];
+    if (!_firstPacket) {
+        NSMutableString *header = [NSMutableString string];
+        const uint8_t *bytes = data.bytes;
+        for (NSUInteger i = 0; i < MIN(data.length, (NSUInteger)64); i++)
+            [header appendFormat:@"%@%02X", i ? @" " : @"", (unsigned)bytes[i]];
+        _firstPacket = [NSString stringWithFormat:@"%lu 字节 / %@", (unsigned long)data.length, header];
+    }
+    if ((_state != HBClientStarting && _state != HBClientStreaming) ||
+        (_state == HBClientStarting && !_lastStart)) return;
     HBFragment fragment;
     if (!hb_parse_fragment(data.bytes, data.length, &fragment)) { _invalid++; return; }
-    if (_state == HBClientStarting && (!_lastStart || (!_seenFirstFragment && fragment.sequence != 1))) return;
     _seenFirstFragment = YES;
     _packets++;
     HBFrame *frame = NULL;
@@ -257,9 +296,6 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     [self deliverJPEG:jpeg];
 }
 
-- (void)udpSocket:(GCDAsyncUdpSocket *)sock didNotConnect:(NSError *)error {
-    if (sock == _socket) [self fail:[NSString stringWithFormat:@"UDP 初始化失败：%@", error.localizedDescription ?: @"未知错误"]];
-}
 - (void)udpSocket:(GCDAsyncUdpSocket *)sock didNotSendDataWithTag:(long)tag dueToError:(NSError *)error {
     if (sock != _socket) return;
     if (_state == HBClientDisconnecting) { [self closeSocket]; _state = HBClientDisconnected; [self publish:@"UDP 已关闭；STOP 未确认送达"];

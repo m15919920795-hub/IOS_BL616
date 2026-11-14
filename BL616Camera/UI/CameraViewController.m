@@ -76,7 +76,7 @@
     }
     _status = [self label:@"未连接" size:15];
     _status.accessibilityIdentifier = @"connectionStatus";
-    _statistics = [self label:@"本地监听：—\n接收分片：0 · 完整帧：0" size:13];
+    _statistics = [self label:@"本地监听：—\nUDP 收包：0 · 字节：0\n有效分片：0 · 完整帧：0" size:13];
     [stack addArrangedSubview:_status]; [stack addArrangedSubview:_statistics];
     UILabel *help = [self label:@"先在系统 Wi-Fi 设置中连接摄像板所在网络，并允许本地网络访问。默认 IP 仅适用于板端已开启默认 AP 的情况。UDP 就绪表示本地会话已建立，收到图像后才确认图传。" size:13];
     help.textColor = UIColor.secondaryLabelColor;
@@ -156,8 +156,9 @@
     if (generation != _generation) { _generation = generation; [_renderer resetForGeneration:generation]; }
     [self updateControls:[status[@"state"] integerValue]];
     _status.text = status[@"detail"];
-    _statistics.text = [NSString stringWithFormat:@"本地监听：%@\n接收分片：%@ · 完整帧：%@\n无效分片：%@ · 过期/拒收：%@",
-        status[@"localPort"], status[@"packets"], status[@"frames"], status[@"invalid"], status[@"dropped"]];
+    _statistics.text = [NSString stringWithFormat:@"本地监听：%@\nUDP 收包：%@ · 字节：%@\n有效分片：%@ · 完整帧：%@\n无效分片：%@ · 过期/拒收：%@\n最近来源：%@\n首包（最多 64 字节）：%@",
+        status[@"localPort"], status[@"datagrams"], status[@"receivedBytes"], status[@"packets"],
+        status[@"frames"], status[@"invalid"], status[@"dropped"], status[@"lastSource"], status[@"firstPacket"]];
 }
 - (void)client:(HBUDPClient *)client didReceiveJPEG:(NSData *)jpeg generation:(uint64_t)generation {
     (void)client; [_renderer submitJPEG:jpeg generation:generation];

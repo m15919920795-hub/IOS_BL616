@@ -8,12 +8,16 @@
 @interface UDPClientTests : XCTestCase <HBUDPClientDelegate, GCDAsyncUdpSocketDelegate>
 @property(nonatomic, strong) HBUDPClient *client;
 @property(nonatomic, strong) GCDAsyncUdpSocket *server;
+@property(nonatomic, strong) GCDAsyncUdpSocket *imageSender;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, XCTestExpectation *> *states;
 @property(nonatomic, strong) XCTestExpectation *startReceived, *stopReceived, *frameReceived, *ackReceived;
 @property(nonatomic, strong) NSData *fixture;
 @property(nonatomic) uint16_t clientPort;
 @property(nonatomic) BOOL sendFrame;
+@property(nonatomic) BOOL sendMalformed;
 @property(nonatomic) NSUInteger startCount;
+@property(nonatomic) uint64_t frameSequence;
+@property(nonatomic, strong) NSDictionary *latestStatus;
 @end
 
 @implementation UDPClientTests
@@ -27,11 +31,14 @@
     XCTAssertTrue([self.server beginReceiving:&error], @"%@", error);
     self.client = [[HBUDPClient alloc] init]; self.client.delegate = self;
     self.fixture = [NSData dataWithBytes:"\xff\xd8\xff\xd9" length:4];
+    self.frameSequence = 1;
 }
 - (void)tearDown {
     self.client.delegate = nil; [self.client disconnect];
     self.server.delegate = nil; [self.server close];
+    self.imageSender.delegate = nil; [self.imageSender close];
     self.client = nil; self.server = nil;
+    self.imageSender = nil;
     [super tearDown];
 }
 - (XCTestExpectation *)expectState:(HBClientState)state {
@@ -74,6 +81,40 @@
     [self.client startVideo]; [self.client disconnect];
     [self waitForExpectations:@[closed,self.startReceived] timeout:0.6];
 }
+- (void)testDifferentImageSourcePortAndNonInitialSequence {
+    self.imageSender = [[GCDAsyncUdpSocket alloc] initWithDelegate:self delegateQueue:dispatch_get_main_queue()];
+    [self.imageSender setIPv6Enabled:NO];
+    NSError *error = nil;
+    XCTAssertTrue([self.imageSender bindToPort:0 error:&error], @"%@", error);
+    XCTAssertNotEqual(self.imageSender.localPort, self.server.localPort);
+    self.frameSequence = 42;
+    [self connect];
+    self.startReceived = [self expectationWithDescription:@"START reaches command port"];
+    self.frameReceived = [self expectationWithDescription:@"JPEG arrives from a separate image port, sequence 42"];
+    self.ackReceived = [self expectationWithDescription:@"ACK reaches command port"];
+    self.sendFrame = YES;
+    [self.client startVideo];
+    [self waitForExpectations:@[self.startReceived, self.frameReceived, self.ackReceived] timeout:4];
+    XCTAssertEqualObjects(self.latestStatus[@"lastSource"],
+        [NSString stringWithFormat:@"127.0.0.1:%u", (unsigned)self.imageSender.localPort]);
+    XCTAssertGreaterThanOrEqual([self.latestStatus[@"datagrams"] unsignedLongLongValue], 1ull);
+    XCTAssertEqual([self.latestStatus[@"frames"] unsignedLongLongValue], 1ull);
+}
+- (void)testMalformedPacketStillPublishesReceiveDiagnostics {
+    [self connect];
+    self.sendMalformed = YES;
+    XCTestExpectation *received = [[XCTNSPredicateExpectation alloc]
+        initWithPredicate:[NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
+            (void)object; (void)bindings;
+            return [self.latestStatus[@"datagrams"] unsignedLongLongValue] > 0 &&
+                   [self.latestStatus[@"invalid"] unsignedLongLongValue] > 0;
+        }] object:nil];
+    [self.client startVideo];
+    [self waitForExpectations:@[received] timeout:3];
+    XCTAssertEqualObjects(self.latestStatus[@"firstPacket"], @"4 字节 / FF D8 FF D9");
+    XCTAssertGreaterThanOrEqual([self.latestStatus[@"receivedBytes"] unsignedLongLongValue], 4ull);
+    XCTAssertEqual([self.latestStatus[@"frames"] unsignedLongLongValue], 0ull);
+}
 - (void)testInvalidAddressFailsLocally {
     XCTestExpectation *rejected = [self expectState:HBClientDisconnected];
     [self.client connectToHost:@"invalid-host" remotePort:8800 localPort:0];
@@ -99,6 +140,7 @@
 }
 - (void)client:(HBUDPClient *)client didUpdateStatus:(NSDictionary<NSString *,id> *)status {
     (void)client;
+    self.latestStatus = status;
     NSNumber *state = status[@"state"];
     if ([state integerValue] == HBClientReady) self.clientPort = [status[@"localPort"] unsignedShortValue];
     XCTestExpectation *expectation = self.states[state];
@@ -115,17 +157,26 @@
     const uint8_t *p = data.bytes;
     XCTAssertEqual([GCDAsyncUdpSocket portFromAddress:address], self.clientPort);
     if (data.length == 4 && memcmp(p,"\xef\x00\x04\x00",4) == 0) {
+        XCTAssertEqual(sock, self.server);
         self.startCount++;
         [self.startReceived fulfill]; self.startReceived = nil;
         if (self.sendFrame) {
             uint8_t packet[60] = {0x93,1,60,0,2,2,0,1,1};
+            for (unsigned i = 0; i < 8; i++) packet[8 + i] = (uint8_t)(self.frameSequence >> (8 * i));
             packet[36] = 1; packet[40] = 4; packet[44] = 1; packet[46] = 1; packet[48] = 50;
             memcpy(packet + 56,self.fixture.bytes,4);
-            [sock sendData:[NSData dataWithBytes:packet length:60] toAddress:address withTimeout:1 tag:0];
+            [(self.imageSender ?: sock) sendData:[NSData dataWithBytes:packet length:60]
+                toAddress:address withTimeout:1 tag:0];
+        } else if (self.sendMalformed) {
+            [sock sendData:self.fixture toAddress:address withTimeout:1 tag:0];
         }
     } else if (data.length == 4 && memcmp(p,"\xef\x01\x04\x00",4) == 0) {
         [self.stopReceived fulfill]; self.stopReceived = nil;
-    } else if (data.length == 48 && p[0] == 0xef && p[1] == 2 && p[8] == 1 && p[32] == 1 && p[40] == 1) {
+    } else if (data.length == 48 && p[0] == 0xef && p[1] == 2 && p[8] == 1 && p[40] == 1) {
+        XCTAssertEqual(sock, self.server);
+        uint64_t sequence = 0;
+        for (unsigned i = 0; i < 8; i++) sequence |= (uint64_t)p[32 + i] << (8 * i);
+        XCTAssertEqual(sequence, self.frameSequence);
         [self.ackReceived fulfill]; self.ackReceived = nil;
     }
 }
