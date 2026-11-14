@@ -51,9 +51,17 @@
         if (strongSelf) strongSelf->_status.text = @"收到的 JPEG 无法解码，请检查板端图像格式";
     };
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    // Apply the test board's ports once, including installs with the old defaults saved.
+    if ([defaults integerForKey:@"portDefaultsVersion"] < 1) {
+        if ([[defaults stringForKey:@"remotePort"] isEqualToString:@"8800"])
+            [defaults setObject:@"8801" forKey:@"remotePort"];
+        if ([[defaults stringForKey:@"localPort"] isEqualToString:@"9000"])
+            [defaults setObject:@"1235" forKey:@"localPort"];
+        [defaults setInteger:1 forKey:@"portDefaultsVersion"];
+    }
     _host = [self field:([defaults stringForKey:@"deviceIP"] ?: @"192.168.169.1") numeric:NO];
-    _remotePort = [self field:([defaults stringForKey:@"remotePort"] ?: @"8800") numeric:YES];
-    _localPort = [self field:([defaults stringForKey:@"localPort"] ?: @"9000") numeric:YES];
+    _remotePort = [self field:([defaults stringForKey:@"remotePort"] ?: @"8801") numeric:YES];
+    _localPort = [self field:([defaults stringForKey:@"localPort"] ?: @"1235") numeric:YES];
     [stack addArrangedSubview:[self row:@"设备 IP" field:_host]];
     [stack addArrangedSubview:[self row:@"设备端口" field:_remotePort]];
     [stack addArrangedSubview:[self row:@"本地端口" field:_localPort]];
