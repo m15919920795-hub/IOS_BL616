@@ -95,8 +95,8 @@
     self.sendFrame = YES;
     [self.client startVideo];
     [self waitForExpectations:@[self.startReceived, self.frameReceived, self.ackReceived] timeout:4];
-    XCTAssertEqualObjects(self.latestStatus[@"lastSource"],
-        [NSString stringWithFormat:@"127.0.0.1:%u", (unsigned)self.imageSender.localPort]);
+    NSString *imageSource = [NSString stringWithFormat:@"127.0.0.1:%u", (unsigned)self.imageSender.localPort];
+    XCTAssertEqualObjects(self.latestStatus[@"lastSource"], imageSource);
     XCTAssertGreaterThanOrEqual([self.latestStatus[@"datagrams"] unsignedLongLongValue], 1ull);
     XCTAssertEqual([self.latestStatus[@"frames"] unsignedLongLongValue], 1ull);
 }
