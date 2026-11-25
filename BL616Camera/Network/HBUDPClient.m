@@ -122,8 +122,9 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     _state = HBClientReady;
     [self publish:@"UDP 会话就绪；尚未验证设备在线"];
     _timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _queue);
-    dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
-                             20 * NSEC_PER_MSEC, 2 * NSEC_PER_MSEC);
+    uint64_t interval = HB_ACK_INTERVAL_MS * NSEC_PER_MSEC;
+    dispatch_source_set_timer(_timer, dispatch_time(DISPATCH_TIME_NOW, interval),
+                             interval, 2 * NSEC_PER_MSEC);
     __weak HBUDPClient *weakSelf = self;
     dispatch_source_set_event_handler(_timer, ^{ [weakSelf tick]; });
     dispatch_resume(_timer);
@@ -187,10 +188,9 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     });
 }
 
-- (void)ackFrame:(HBFrame *)frame {
+- (void)ackFrame:(HBFrame *)frame at:(uint64_t)now {
     uint8_t bytes[48 + HB_BITMAP_SIZE];
-    size_t length = hb_write_ack(bytes, sizeof(bytes), frame->info.sequence, frame->status,
-                                 frame->bitmap, frame->info.count);
+    size_t length = hb_prepare_frame_ack(frame, now, bytes, sizeof(bytes));
     if (length) [_socket sendData:[NSData dataWithBytes:bytes length:length] toAddress:_commandAddress
                      withTimeout:0.3 tag:3];
 }
@@ -241,8 +241,10 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
         for (unsigned i = 0; i < HB_FRAME_SLOTS; i++)
             if (_receiver.frames[i].used && _receiver.frames[i].status == HB_ACK_PARTIAL) partialAfter++;
         _dropped += partialBefore - partialAfter;
-        for (unsigned i = 0; i < HB_FRAME_SLOTS; i++)
-            if (_receiver.frames[i].used) [self ackFrame:&_receiver.frames[i]];
+        for (unsigned i = 0; i < HB_FRAME_SLOTS; i++) {
+            HBFrame *frame = &_receiver.frames[i];
+            if (hb_receiver_ack_due(&_receiver, frame, now)) [self ackFrame:frame at:now];
+        }
     }
     if (_state == HBClientStopping && now >= _stopUntil) {
         _state = HBClientReady;
@@ -274,18 +276,19 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     _seenFirstFragment = YES;
     _packets++;
     HBFrame *frame = NULL;
-    HBResult result = hb_receiver_feed(&_receiver, data.bytes, data.length, HBNow(), &frame);
+    uint64_t now = HBNow();
+    HBResult result = hb_receiver_feed(&_receiver, data.bytes, data.length, now, &frame);
     if (result == HB_OLD || result == HB_NO_MEMORY) {
         HBFrame dropped = {0}; dropped.info = fragment; dropped.status = HB_ACK_DROP;
-        [self ackFrame:&dropped]; _dropped++;
+        [self ackFrame:&dropped at:now]; _dropped++;
         return;
     }
     if (result == HB_INVALID) { _invalid++; return; }
-    if (result == HB_COMPLETE || (result == HB_DUPLICATE && frame->status != HB_ACK_PARTIAL)) [self ackFrame:frame];
     if (result != HB_COMPLETE) return;
+    [self ackFrame:frame at:now];
     if (fragment.sequence <= _lastDelivered) { hb_frame_release_payload(frame); return; }
     _lastDelivered = fragment.sequence;
-    _lastFrame = HBNow();
+    _lastFrame = now;
     _frames++;
     NSData *jpeg = [NSData dataWithBytes:frame->bytes length:frame->info.frame_size];
     hb_frame_release_payload(frame);

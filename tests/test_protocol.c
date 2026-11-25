@@ -65,6 +65,49 @@ static void reassembly(void) {
     hb_receiver_reset(&r);
 }
 
+static void ack_schedule(void) {
+    HBReceiver r = {0};
+    HBFrame *first, *next;
+    uint8_t p[1080], ack[112];
+    size_t n = packet(p, 1, 2000, 0);
+    assert(hb_receiver_feed(&r, p, n, 100, &first) == HB_STORED);
+    assert(hb_receiver_ack_due(&r, first, 101));
+    assert(hb_prepare_frame_ack(first, 101, ack, sizeof(ack)) == 49);
+    assert(ack[40] == HB_ACK_PARTIAL && ack[48] == 1);
+    assert(!hb_receiver_ack_due(&r, first, 120));
+
+    n = packet(p, 1, 2000, 1);
+    assert(hb_receiver_feed(&r, p, n, 105, &first) == HB_COMPLETE);
+    assert(hb_prepare_frame_ack(first, 105, ack, sizeof(ack)) == 48);
+    assert(ack[40] == HB_ACK_COMPLETE);
+    hb_frame_release_payload(first);
+    assert(!hb_receiver_ack_due(&r, first, 125));
+    assert(!hb_receiver_ack_due(&r, first, 184));
+    assert(hb_receiver_ack_due(&r, first, 185));
+    assert(hb_prepare_frame_ack(first, 185, ack, sizeof(ack)) == 48);
+    assert(!hb_receiver_ack_due(&r, first, 205));
+
+    for (uint64_t t = 190; t <= 192; t++)
+        assert(hb_receiver_feed(&r, p, n, t, &first) == HB_DUPLICATE);
+    assert(!hb_receiver_ack_due(&r, first, 204));
+    assert(hb_receiver_ack_due(&r, first, 205));
+    assert(hb_prepare_frame_ack(first, 205, ack, sizeof(ack)) == 48);
+    assert(!hb_receiver_ack_due(&r, first, 225));
+
+    n = packet(p, 2, 2000, 0);
+    assert(hb_receiver_feed(&r, p, n, 230, &next) == HB_STORED);
+    assert(!hb_receiver_ack_due(&r, first, 285));
+    assert(hb_receiver_ack_due(&r, next, 285));
+
+    hb_receiver_expire(&r, 731);
+    assert(hb_receiver_ack_due(&r, next, 731));
+    assert(hb_prepare_frame_ack(next, 731, ack, sizeof(ack)) == 48);
+    assert(ack[40] == HB_ACK_DROP);
+    assert(!hb_receiver_ack_due(&r, next, 751));
+    assert(hb_receiver_ack_due(&r, next, 811));
+    hb_receiver_reset(&r);
+}
+
 static void boundaries(void) {
     uint8_t p[1080]; HBFragment f; HBReceiver r = {0}; HBFrame *frame;
     size_t n = packet(p,UINT64_C(0x0102030405060708),2049,2);
@@ -92,7 +135,7 @@ static void boundaries(void) {
     hb_receiver_reset(&r);
 }
 int main(void) {
-    commands_and_ack(); reassembly(); boundaries();
+    commands_and_ack(); reassembly(); ack_schedule(); boundaries();
     puts("HiBooster wire / reassembly / malformed input tests passed");
     return 0;
 }

@@ -105,8 +105,12 @@ HBResult hb_receiver_feed(HBReceiver *r, const uint8_t *data, size_t size,
         slot->created_ms = now; slot->status = HB_ACK_PARTIAL;
     }
     *out = slot;
-    if (slot->status != HB_ACK_PARTIAL || (slot->bitmap[f.index / 8] & (1u << (f.index % 8))))
+    if (f.sequence > r->latest_sequence) r->latest_sequence = f.sequence;
+    if (slot->status != HB_ACK_PARTIAL) {
+        slot->ack_pending = true;
         return HB_DUPLICATE;
+    }
+    if (slot->bitmap[f.index / 8] & (1u << (f.index % 8))) return HB_DUPLICATE;
     memcpy(slot->bytes + (size_t)f.index * HB_FRAGMENT_SIZE, f.payload, f.payload_size);
     slot->bitmap[f.index / 8] |= (uint8_t)(1u << (f.index % 8));
     slot->received++;
@@ -121,7 +125,28 @@ void hb_receiver_expire(HBReceiver *r, uint64_t now) {
         if (f->used && f->status == HB_ACK_PARTIAL && now >= f->created_ms &&
             now - f->created_ms > HB_FRAME_TIMEOUT_MS) {
             f->status = HB_ACK_DROP;
+            f->ack_pending = true;
             hb_frame_release_payload(f);
         }
     }
+}
+
+bool hb_receiver_ack_due(const HBReceiver *r, const HBFrame *f, uint64_t now) {
+    if (!f->used || now < f->last_ack_ms) return false;
+    uint64_t elapsed = now - f->last_ack_ms;
+    if (elapsed < HB_ACK_INTERVAL_MS) return false;
+    if (f->status == HB_ACK_PARTIAL || f->ack_pending) return true;
+
+    /* Nudge the sender when no fragment for a newer frame has arrived. */
+    return f->info.sequence == r->latest_sequence && elapsed >= HB_ACK_ADVANCE_RETRY_MS;
+}
+
+size_t hb_prepare_frame_ack(HBFrame *f, uint64_t now, uint8_t *out, size_t capacity) {
+    size_t length = hb_write_ack(out, capacity, f->info.sequence, f->status,
+                                 f->bitmap, f->info.count);
+    if (length) {
+        f->last_ack_ms = now;
+        f->ack_pending = false;
+    }
+    return length;
 }
