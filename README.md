@@ -10,17 +10,14 @@
 - 仅支持左右横屏，视频按原始比例全屏显示，隐藏系统状态栏。
 - 默认隐藏设置和状态面板；轻点画面或右上角控制按钮展开，点关闭按钮或面板外画面收起。
 - 开始出图后自动收起面板；图传超时或连接失败时自动展开，显示原因并保留启停操作。
-- 连接 UDP：绑定本地端口，设置摄像板 IPv4 地址和目标端口，开始接收。
-- 断开 UDP：发送 STOP，关闭 socket、释放端口并清除接收和显示队列。
-- 开启图传：发送 START，重组 HiBooster JPEG 分片，发送接收位图和完成 ACK，实时显示图像。
-- 关闭图传：发送 STOP，清除画面及分片，保留 UDP 会话，支持再次开启。
-- 显示本地端口、原始 UDP 收包/字节数、来源端口、首包前 64 字节、有效分片和完整帧统计；进入后台自动断开。
+- 控制面板提供连接 UDP、断开 UDP、开启图传、关闭图传和发送串口测试。
+- 状态区显示连接、播放和失败原因。App 进入后台会断开 UDP。
 
-UDP 本身没有握手。界面“UDP 会话就绪”只说明本地 socket 已准备好；
-收到完整图像才进入图传状态。STOP 没有设备应答，发送成功不能证明设备已经停止。
+UDP 本身没有握手。界面“UDP 已就绪”只说明本地 socket 已准备好；
+收到并解码完整图像后进入图传状态。STOP 没有设备应答，发送成功不能证明设备已经停止。
 
 Wi-Fi 6 由手机、摄像板及无线网络协商，App 的 UDP 接口不能强制启用 802.11ax。
-连接 B 固件并开始出图后，可以在控制面板点击「开启 B 固件 TX 中立测试」。
+连接 B 固件并开始出图后，可以在控制面板点击「发送串口测试（B 固件）」。
 再次点击停止附带中立数据，画面继续播放。串口输出由板端完成，包格式见
 [控制测试说明](docs/HIBOOSTER.md#b-固件-tx-中立测试)。
 
@@ -54,21 +51,42 @@ SDK 示例不会自动创建 AP 或连接路由器，须先在板端完成网络
 ### UDP 助手有数据、App 没有画面时
 
 1. 先关闭 UDP 助手的监听，避免占用手机 `1235`；确认手机仍连接摄像板 Wi-Fi，并单独允许本 App 访问本地网络。
-2. 点击“连接 UDP”再点击“开启图传”，观察“UDP 收包”和“字节”。这两个统计在协议解析前累计，不代表有效图像。
-3. 收包为 0 时，检查网络、设备 IP、本地网络权限、监听端口和 START 是否送达。
-4. 收包增长但无效分片增长时，查看“最近来源”和“首包”；截图应包含这两项，以核对是否仍为本文档的 HiBooster 分片格式。
-5. 有效分片增长但完整帧为 0 时，检查分片是否齐全及 ACK 路由；当前 ACK 发往配置的设备端口。
+2. 点击“连接 UDP”再点击“开启图传”，根据超时提示检查设备地址、分片格式和 ACK 路由。
 
-接入已运行的摄像板时，首个有效帧序号可以大于 1，客户端不再要求从序号 1 开始。
+接入已运行的摄像板时，首个有效帧序号可以大于 1。
+
+## 接入接口
+
+五个操作声明在 [HBUDPClient.h](BL616Camera/Network/HBUDPClient.h)，实现见 [HBUDPClient.m](BL616Camera/Network/HBUDPClient.m)。
+
+| 操作 | Objective-C 接口 | 用法 |
+| --- | --- | --- |
+| 连接 UDP | `connectToHost:remotePort:localPort:` | 设置板端 IPv4 和端口，绑定本地端口。收到 `HBClientReady` 后可开启图传。 |
+| 断开 UDP | `disconnect` | 请求停止图传，关闭 socket 并释放端口。 |
+| 开启图传 | `startVideo` | 请求板端推图并开始接收。 |
+| 关闭图传 | `stopVideo` | 请求停止推图，可用同一 UDP 会话再次开启。 |
+| 发送串口数据 | `setTXControlData:` | 播放时传入 1–62 字节，通过后续 B 格式 ACK 携带。传 `nil` 停止携带。 |
+
+设置客户端的 `delegate` 后，在主线程的 `client:didReceiveImage:generation:`
+接收已拼接、解码的 `UIImage`。可以直接把它交给显示层。状态回调中的
+`generation` 变化时，显示层可以清除上一轮画面。
+
+```objc
+- (void)client:(HBUDPClient *)client didReceiveImage:(UIImage *)image generation:(uint64_t)generation {
+    self.imageView.image = image;
+}
+```
+
+发送串口数据的调用示例见 [B 固件控制测试](docs/HIBOOSTER.md#b-固件-tx-中立测试)。
 
 ## 代码结构
 
 | 路径 | 职责 |
 | --- | --- |
 | `BL616Camera/Core/HBProtocol.c` | C 语言分片解析、边界检查、重组、ACK 编码 |
-| `BL616Camera/Network/HBUDPClient.m` | 单 socket、串行状态机、启停指令和超时处理 |
-| `BL616Camera/Video/JPEGRenderer.m` | 后台 ImageIO 解码，只保留最新待显示帧 |
-| `BL616Camera/UI/CameraViewController.m` | IP/端口输入、四个功能按钮和实时预览 |
+| `BL616Camera/Network/HBUDPClient.m` | UDP 会话、启停指令、串口控制、后台解码调度和主线程回调 |
+| `BL616Camera/Video/JPEGRenderer.m` | 用 ImageIO 将完整 JPEG 解码为 UIImage |
+| `BL616Camera/UI/CameraViewController.m` | 按钮调用示例、状态反馈及 UIImage 显示示例 |
 | `docs/HIBOOSTER.md` | 当前 SDK 库对应的线上协议与兼容性边界 |
 | `tests/test_protocol.c` | 可在 Linux/macOS 运行的协议测试 |
 | `BL616CameraTests/UDPClientTests.m` | 模拟器 UDP 回环及 JPEG 解码测试 |
@@ -92,7 +110,7 @@ bash tools/check_macos.sh
 
 GitHub Actions 会运行协议检查和 iOS 模拟器 XCTest，包括连接、START、JPEG 接收、
 完成 ACK、STOP、断开后的端口释放以及取消未发出的 START。
-另覆盖图像来源端口与指令端口不同、首帧序号大于 1，以及畸形数据的原始收包诊断。
+另覆盖图像来源端口与指令端口不同、首帧序号大于 1，畸形数据的开启超时，以及 UIImage 主线程回调和控制数据更新。
 Xcode 工程由 `tools/generate_project.py` 生成；增删源文件后运行该脚本，提交生成结果。
 
 AppIcon 使用黑白 Power Craze 车标，已配置 iPhone、iPad 和 App Store 所需尺寸。

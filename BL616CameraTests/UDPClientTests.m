@@ -3,6 +3,7 @@
 @import CocoaAsyncSocket;
 #include <string.h>
 #import "HBUDPClient.h"
+#import "HBProtocol.h"
 #import "JPEGRenderer.h"
 
 @interface UDPClientTests : XCTestCase <HBUDPClientDelegate, GCDAsyncUdpSocketDelegate>
@@ -19,7 +20,9 @@
 @property(nonatomic) BOOL sendMalformed;
 @property(nonatomic) NSUInteger startCount;
 @property(nonatomic) uint64_t frameSequence;
-@property(nonatomic, strong) NSDictionary *latestStatus;
+@property(nonatomic) HBClientState latestState;
+@property(nonatomic) uint64_t latestGeneration;
+@property(nonatomic, copy) NSString *lastMessage;
 @end
 
 @implementation UDPClientTests
@@ -32,7 +35,16 @@
     XCTAssertTrue([self.server bindToPort:0 error:&error], @"%@", error);
     XCTAssertTrue([self.server beginReceiving:&error], @"%@", error);
     self.client = [[HBUDPClient alloc] init]; self.client.delegate = self;
-    self.fixture = [NSData dataWithBytes:"\xff\xd8\xff\xd9" length:4];
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 1;
+    format.preferredRange = UIGraphicsImageRendererFormatRangeStandard;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+        initWithSize:CGSizeMake(8, 6) format:format];
+    self.fixture = [renderer JPEGDataWithCompressionQuality:0.7 actions:^(UIGraphicsImageRendererContext *context) {
+        [UIColor.blueColor setFill];
+        [context fillRect:CGRectMake(0, 0, 8, 6)];
+    }];
+    XCTAssertGreaterThan(self.fixture.length, 0u);
     self.frameSequence = 1;
 }
 - (void)tearDown {
@@ -56,7 +68,7 @@
 - (void)testStartReceiveAcknowledgeStopAndDisconnect {
     [self connect];
     self.startReceived = [self expectationWithDescription:@"START bytes received"];
-    self.frameReceived = [self expectationWithDescription:@"JPEG reassembled"];
+    self.frameReceived = [self expectationWithDescription:@"UIImage delivered"];
     self.ackReceived = [self expectationWithDescription:@"complete ACK received"];
     self.sendFrame = YES;
     [self.client startVideo];
@@ -80,14 +92,15 @@
     const uint8_t custom[] = {0x33, 0xaa, 0x80, 0x00, 0x88};
     NSMutableData *payload = [NSMutableData dataWithBytes:custom length:sizeof(custom)];
     XCTAssertFalse([self.client setTXControlData:payload]);
-    self.frameReceived = [self expectationWithDescription:@"JPEG reassembled for neutral test"];
+    self.frameReceived = [self expectationWithDescription:@"UIImage delivered before TX control"];
     self.ackReceived = [self expectationWithDescription:@"standard ACK before enabling test"];
     self.sendFrame = YES;
     [self.client startVideo];
     [self waitForExpectations:@[self.frameReceived, self.ackReceived] timeout:4];
 
     self.neutralAckReceived = [self expectationWithDescription:@"two B ACKs carry neutral TX payloads"];
-    [self.client setNeutralTXTestEnabled:YES];
+    const uint8_t neutral[] = {0x33, 0x80, 0x80, 0x00, 0x88};
+    XCTAssertTrue([self.client setTXControlData:[NSData dataWithBytes:neutral length:sizeof(neutral)]]);
     [self waitForExpectations:@[self.neutralAckReceived] timeout:2];
 
     XCTAssertFalse([self.client setTXControlData:[NSData data]]);
@@ -99,7 +112,7 @@
     self.controlOffAckReceived = [self expectationWithDescription:@"B ACK omits TX payload after stopping test"];
     XCTAssertTrue([self.client setTXControlData:nil]);
     [self waitForExpectations:@[self.controlOffAckReceived] timeout:2];
-    XCTAssertEqual([self.latestStatus[@"state"] integerValue], HBClientStreaming);
+    XCTAssertEqual(self.latestState, HBClientStreaming);
 }
 
 - (void)testDisconnectCancelsPendingStart {
@@ -124,60 +137,50 @@
     self.sendFrame = YES;
     [self.client startVideo];
     [self waitForExpectations:@[self.startReceived, self.frameReceived, self.ackReceived] timeout:4];
-    NSString *imageSource = [NSString stringWithFormat:@"127.0.0.1:%u", (unsigned)self.imageSender.localPort];
-    XCTAssertEqualObjects(self.latestStatus[@"lastSource"], imageSource);
-    XCTAssertGreaterThanOrEqual([self.latestStatus[@"datagrams"] unsignedLongLongValue], 1ull);
-    XCTAssertEqual([self.latestStatus[@"frames"] unsignedLongLongValue], 1ull);
+    XCTAssertEqual(self.latestState, HBClientStreaming);
 }
-- (void)testMalformedPacketStillPublishesReceiveDiagnostics {
+- (void)testMalformedPacketReportsStartFailure {
     [self connect];
     self.sendMalformed = YES;
-    XCTestExpectation *received = [[XCTNSPredicateExpectation alloc]
-        initWithPredicate:[NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
-            (void)object; (void)bindings;
-            return [self.latestStatus[@"datagrams"] unsignedLongLongValue] > 0 &&
-                   [self.latestStatus[@"invalid"] unsignedLongLongValue] > 0;
-        }] object:nil];
+    self.frameReceived = [self expectationWithDescription:@"malformed data produces no image"];
+    self.frameReceived.inverted = YES;
+    XCTestExpectation *stopping = [self expectState:HBClientStopping];
     [self.client startVideo];
-    [self waitForExpectations:@[received] timeout:3];
-    XCTAssertEqualObjects(self.latestStatus[@"firstPacket"], @"4 字节 / FF D8 FF D9");
-    XCTAssertGreaterThanOrEqual([self.latestStatus[@"receivedBytes"] unsignedLongLongValue], 4ull);
-    XCTAssertEqual([self.latestStatus[@"frames"] unsignedLongLongValue], 0ull);
+    [self waitForExpectations:@[stopping, self.frameReceived] timeout:6];
+    XCTAssertTrue([self.lastMessage containsString:@"未识别出有效图像分片"]);
 }
 - (void)testInvalidAddressFailsLocally {
     XCTestExpectation *rejected = [self expectState:HBClientDisconnected];
     [self.client connectToHost:@"invalid-host" remotePort:8800 localPort:0];
     [self waitForExpectations:@[rejected] timeout:2];
 }
-- (void)testJPEGRendererDecodesAndClearsOnStop {
-    UIImageView *view = [[UIImageView alloc] init];
-    JPEGRenderer *renderer = [[JPEGRenderer alloc] initWithImageView:view];
-    UIGraphicsImageRenderer *imageRenderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(16,16)];
-    UIImage *image = [imageRenderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-        [UIColor.blueColor setFill]; [context fillRect:CGRectMake(0,0,16,16)];
-    }];
-    [renderer resetForGeneration:1];
-    [renderer submitJPEG:UIImageJPEGRepresentation(image,0.7) generation:1];
-    XCTestExpectation *displayed = [[XCTNSPredicateExpectation alloc]
-        initWithPredicate:[NSPredicate predicateWithBlock:^BOOL(id object, NSDictionary *bindings) {
-            (void)object; (void)bindings; return view.image != nil;
-        }] object:nil];
-    [self waitForExpectations:@[displayed] timeout:3];
-    [renderer resetForGeneration:2]; XCTAssertNil(view.image);
-    [renderer submitJPEG:UIImageJPEGRepresentation(image,0.7) generation:1];
-    XCTAssertNil(view.image);
+- (void)testDecodeJPEGProducesUIImageAndRejectsMalformedData {
+    UIImage *image = HBDecodeJPEG(self.fixture);
+    XCTAssertNotNil(image);
+    if (image) XCTAssertTrue(CGSizeEqualToSize(image.size, CGSizeMake(8, 6)));
+    NSData *malformed = [NSData dataWithBytes:"\xff\xd8\xff\xd9" length:4];
+    XCTAssertNil(HBDecodeJPEG(malformed));
 }
-- (void)client:(HBUDPClient *)client didUpdateStatus:(NSDictionary<NSString *,id> *)status {
+- (void)client:(HBUDPClient *)client didUpdateState:(HBClientState)state
+    generation:(uint64_t)generation localPort:(uint16_t)localPort message:(NSString *)message {
     (void)client;
-    self.latestStatus = status;
-    NSNumber *state = status[@"state"];
-    if ([state integerValue] == HBClientReady) self.clientPort = [status[@"localPort"] unsignedShortValue];
-    XCTestExpectation *expectation = self.states[state];
-    if (expectation) { [self.states removeObjectForKey:state]; [expectation fulfill]; }
+    XCTAssertTrue(NSThread.isMainThread);
+    self.latestState = state;
+    self.latestGeneration = generation;
+    self.lastMessage = message;
+    if (state == HBClientReady) self.clientPort = localPort;
+    XCTestExpectation *expectation = self.states[@(state)];
+    if (expectation) {
+        [self.states removeObjectForKey:@(state)];
+        [expectation fulfill];
+    }
 }
-- (void)client:(HBUDPClient *)client didReceiveJPEG:(NSData *)jpeg generation:(uint64_t)generation {
-    (void)client; (void)generation;
-    XCTAssertEqualObjects(jpeg,self.fixture);
+- (void)client:(HBUDPClient *)client didReceiveImage:(UIImage *)image generation:(uint64_t)generation {
+    (void)client;
+    XCTAssertTrue(NSThread.isMainThread);
+    XCTAssertEqual(generation, self.latestGeneration);
+    XCTAssertEqual(self.latestState, HBClientStreaming);
+    XCTAssertTrue(CGSizeEqualToSize(image.size, CGSizeMake(8, 6)));
     [self.frameReceived fulfill]; self.frameReceived = nil;
 }
 - (void)udpSocket:(GCDAsyncUdpSocket *)sock didReceiveData:(NSData *)data
@@ -190,14 +193,29 @@
         self.startCount++;
         [self.startReceived fulfill]; self.startReceived = nil;
         if (self.sendFrame) {
-            uint8_t packet[60] = {0x93,1,60,0,2,2,0,1,1};
-            for (unsigned i = 0; i < 8; i++) packet[8 + i] = (uint8_t)(self.frameSequence >> (8 * i));
-            packet[36] = 1; packet[40] = 4; packet[44] = 1; packet[46] = 1; packet[48] = 50;
-            memcpy(packet + 56,self.fixture.bytes,4);
-            [(self.imageSender ?: sock) sendData:[NSData dataWithBytes:packet length:60]
-                toAddress:address withTimeout:1 tag:0];
+            NSUInteger count = (self.fixture.length + HB_FRAGMENT_SIZE - 1) / HB_FRAGMENT_SIZE;
+            for (NSUInteger index = 0; index < count; index++) {
+                NSUInteger offset = index * HB_FRAGMENT_SIZE;
+                NSUInteger length = MIN(self.fixture.length - offset, HB_FRAGMENT_SIZE);
+                NSMutableData *packet = [NSMutableData dataWithLength:HB_HEADER_SIZE + length];
+                uint8_t *bytes = packet.mutableBytes;
+                const uint8_t header[] = {0x93, 1, (uint8_t)packet.length, (uint8_t)(packet.length >> 8), 2, 2, 0, 1};
+                memcpy(bytes, header, sizeof(header));
+                for (unsigned i = 0; i < 8; i++) bytes[8 + i] = (uint8_t)(self.frameSequence >> (8 * i));
+                for (unsigned i = 0; i < 4; i++) {
+                    bytes[32 + i] = (uint8_t)(index >> (8 * i));
+                    bytes[36 + i] = (uint8_t)(count >> (8 * i));
+                    bytes[40 + i] = (uint8_t)(self.fixture.length >> (8 * i));
+                }
+                bytes[44] = 8;
+                bytes[46] = 6;
+                bytes[48] = 50;
+                [self.fixture getBytes:bytes + HB_HEADER_SIZE range:NSMakeRange(offset, length)];
+                [(self.imageSender ?: sock) sendData:packet toAddress:address withTimeout:1 tag:0];
+            }
         } else if (self.sendMalformed) {
-            [sock sendData:self.fixture toAddress:address withTimeout:1 tag:0];
+            NSData *malformed = [NSData dataWithBytes:"\xff\xd8\xff\xd9" length:4];
+            [sock sendData:malformed toAddress:address withTimeout:1 tag:0];
         }
     } else if (data.length == 4 && memcmp(p,"\xef\x01\x04\x00",4) == 0) {
         [self.stopReceived fulfill]; self.stopReceived = nil;

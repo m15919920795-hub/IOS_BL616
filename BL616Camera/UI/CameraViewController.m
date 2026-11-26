@@ -1,17 +1,16 @@
 #import "CameraViewController.h"
 #import "HBUDPClient.h"
-#import "JPEGRenderer.h"
 
 @interface CameraViewController () <HBUDPClientDelegate>
 @end
 @implementation CameraViewController {
     HBUDPClient *_client;
-    JPEGRenderer *_renderer;
+    UIImageView *_preview;
     UITextField *_host, *_remotePort, *_localPort;
     UIButton *_connect, *_disconnect, *_start, *_stop, *_neutralTXTest;
     UIButton *_controlsToggle;
     UIVisualEffectView *_controlsPanel;
-    UILabel *_status, *_statistics;
+    UILabel *_status;
     HBClientState _clientState;
     uint64_t _generation;
 }
@@ -19,29 +18,20 @@
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    UIImageView *preview = [[UIImageView alloc] init];
-    preview.translatesAutoresizingMaskIntoConstraints = NO;
-    preview.backgroundColor = UIColor.blackColor;
-    preview.contentMode = UIViewContentModeScaleAspectFit;
-    preview.accessibilityLabel = @"摄像头实时画面";
-    preview.userInteractionEnabled = YES;
-    [self.view addSubview:preview];
+    _preview = [[UIImageView alloc] init];
+    _preview.translatesAutoresizingMaskIntoConstraints = NO;
+    _preview.backgroundColor = UIColor.blackColor;
+    _preview.contentMode = UIViewContentModeScaleAspectFit;
+    _preview.accessibilityLabel = @"摄像头实时画面";
+    _preview.userInteractionEnabled = YES;
+    [self.view addSubview:_preview];
     [NSLayoutConstraint activateConstraints:@[
-        [preview.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [preview.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [preview.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [preview.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+        [_preview.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_preview.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_preview.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_preview.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
     ]];
-    [preview addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(controlsTapped)]];
-    _renderer = [[JPEGRenderer alloc] initWithImageView:preview];
-    __weak CameraViewController *weakSelf = self;
-    _renderer.decodeError = ^{
-        CameraViewController *strongSelf = weakSelf;
-        if (strongSelf) {
-            strongSelf->_status.text = @"收到的 JPEG 无法解码，请检查板端图像格式";
-            [strongSelf setControlsVisible:YES];
-        }
-    };
+    [_preview addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(controlsTapped)]];
 
     _controlsPanel = [[UIVisualEffectView alloc]
         initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark]];
@@ -124,16 +114,12 @@
         row.distribution = UIStackViewDistributionFillEqually; row.spacing = 12;
         [stack addArrangedSubview:row];
     }
-    _neutralTXTest = [self button:@"开启 B 固件 TX 中立测试" action:@selector(neutralTXTapped)];
+    _neutralTXTest = [self button:@"发送串口测试（B 固件）" action:@selector(neutralTXTapped)];
     _neutralTXTest.accessibilityIdentifier = @"neutralTXTest";
     [stack addArrangedSubview:_neutralTXTest];
     _status = [self label:@"未连接" size:15];
     _status.accessibilityIdentifier = @"connectionStatus";
-    _statistics = [self label:@"本地监听：—\nUDP 收包：0 · 字节：0\n有效分片：0 · 完整帧：0" size:13];
-    [stack addArrangedSubview:_status]; [stack addArrangedSubview:_statistics];
-    UILabel *help = [self label:@"先在系统 Wi-Fi 设置中连接摄像板所在网络，并允许本地网络访问。默认 IP 仅适用于板端已开启默认 AP 的情况。UDP 就绪表示本地会话已建立，收到图像后才确认图传。" size:13];
-    help.textColor = UIColor.secondaryLabelColor;
-    [stack addArrangedSubview:help];
+    [stack addArrangedSubview:_status];
     _controlsToggle = [UIButton buttonWithType:UIButtonTypeSystem];
     UIButtonConfiguration *toggleStyle = [UIButtonConfiguration filledButtonConfiguration];
     toggleStyle.image = [UIImage systemImageNamed:@"slider.horizontal.3"];
@@ -224,11 +210,13 @@
     [self updateNeutralTXTest:!_neutralTXTest.selected];
 }
 - (void)updateNeutralTXTest:(BOOL)enabled {
+    const uint8_t neutral[] = {0x33, 0x80, 0x80, 0x00, 0x88};
+    NSData *data = enabled ? [NSData dataWithBytes:neutral length:sizeof(neutral)] : nil;
+    if (![_client setTXControlData:data]) return;
     _neutralTXTest.selected = enabled;
     UIButtonConfiguration *configuration = _neutralTXTest.configuration;
-    configuration.title = enabled ? @"停止 B 固件 TX 中立测试" : @"开启 B 固件 TX 中立测试";
+    configuration.title = enabled ? @"停止串口测试" : @"发送串口测试（B 固件）";
     _neutralTXTest.configuration = configuration;
-    [_client setNeutralTXTestEnabled:enabled];
 }
 - (void)hideKeyboard { [self.view endEditing:YES]; }
 - (void)backgrounded:(NSNotification *)notification { (void)notification; [_client disconnect]; }
@@ -242,17 +230,17 @@
     _neutralTXTest.enabled = state == HBClientStreaming;
     if (!_neutralTXTest.enabled && _neutralTXTest.selected) [self updateNeutralTXTest:NO];
 }
-- (void)client:(HBUDPClient *)client didUpdateStatus:(NSDictionary<NSString *,id> *)status {
-    (void)client;
-    uint64_t generation = [status[@"generation"] unsignedLongLongValue];
-    if (generation != _generation) { _generation = generation; [_renderer resetForGeneration:generation]; }
+- (void)client:(HBUDPClient *)client didUpdateState:(HBClientState)state
+    generation:(uint64_t)generation localPort:(uint16_t)localPort message:(NSString *)message {
+    (void)client; (void)localPort;
+    if (generation != _generation) {
+        _generation = generation;
+        _preview.image = nil;
+    }
     HBClientState previousState = _clientState;
-    _clientState = [status[@"state"] integerValue];
-    [self updateControls:_clientState];
-    _status.text = status[@"detail"];
-    _statistics.text = [NSString stringWithFormat:@"本地监听：%@\nUDP 收包：%@ · 字节：%@\n有效分片：%@ · 完整帧：%@\n无效分片：%@ · 过期/拒收：%@\n最近来源：%@\n首包（最多 64 字节）：%@",
-        status[@"localPort"], status[@"datagrams"], status[@"receivedBytes"], status[@"packets"],
-        status[@"frames"], status[@"invalid"], status[@"dropped"], status[@"lastSource"], status[@"firstPacket"]];
+    _clientState = state;
+    [self updateControls:state];
+    _status.text = message;
     if (_clientState == HBClientStreaming && previousState != HBClientStreaming)
         [self setControlsVisible:NO];
     else if ((_clientState == HBClientDisconnected && previousState != HBClientDisconnected) ||
@@ -260,7 +248,8 @@
               (previousState == HBClientStarting || previousState == HBClientStreaming)))
         [self setControlsVisible:YES];
 }
-- (void)client:(HBUDPClient *)client didReceiveJPEG:(NSData *)jpeg generation:(uint64_t)generation {
-    (void)client; [_renderer submitJPEG:jpeg generation:generation];
+- (void)client:(HBUDPClient *)client didReceiveImage:(UIImage *)image generation:(uint64_t)generation {
+    (void)client;
+    if (generation == _generation) _preview.image = image;
 }
 @end
