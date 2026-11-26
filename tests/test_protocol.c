@@ -76,20 +76,20 @@ static void ack_schedule(void) {
 
     n = packet(p, 1, 2000, 1);
     assert(hb_receiver_feed(&r, p, n, 105, &first) == HB_COMPLETE);
-    assert(hb_prepare_frame_ack(first, 105, ack, sizeof(ack)) == 48);
+    assert(hb_prepare_frame_ack(first, 105, ack, sizeof(ack), HB_FRAME_ACK_STANDARD) == 48);
     assert(ack[40] == HB_ACK_COMPLETE);
     hb_frame_release_payload(first);
     assert(!hb_receiver_ack_due(&r, first, 125));
     assert(!hb_receiver_ack_due(&r, first, 184));
     assert(hb_receiver_ack_due(&r, first, 185));
-    assert(hb_prepare_frame_ack(first, 185, ack, sizeof(ack)) == 48);
+    assert(hb_prepare_frame_ack(first, 185, ack, sizeof(ack), HB_FRAME_ACK_STANDARD) == 48);
     assert(!hb_receiver_ack_due(&r, first, 205));
 
     for (uint64_t t = 190; t <= 192; t++)
         assert(hb_receiver_feed(&r, p, n, t, &first) == HB_DUPLICATE);
     assert(!hb_receiver_ack_due(&r, first, 204));
     assert(hb_receiver_ack_due(&r, first, 205));
-    assert(hb_prepare_frame_ack(first, 205, ack, sizeof(ack)) == 48);
+    assert(hb_prepare_frame_ack(first, 205, ack, sizeof(ack), HB_FRAME_ACK_STANDARD) == 48);
     assert(!hb_receiver_ack_due(&r, first, 225));
 
     /* The last fragment can arrive first. A missing earlier one still gets a grace period. */
@@ -98,7 +98,7 @@ static void ack_schedule(void) {
     assert(hb_receiver_feed(&r, p, n, 242, &next) == HB_DUPLICATE);
     assert(!hb_receiver_ack_due(&r, next, 249));
     assert(hb_receiver_ack_due(&r, next, 250));
-    assert(hb_prepare_frame_ack(next, 250, ack, sizeof(ack)) == 49);
+    assert(hb_prepare_frame_ack(next, 250, ack, sizeof(ack), HB_FRAME_ACK_STANDARD) == 49);
     assert(ack[40] == HB_ACK_PARTIAL && ack[48] == 2);
     assert(!hb_receiver_ack_due(&r, next, 269));
     assert(hb_receiver_ack_due(&r, next, 270));
@@ -106,18 +106,60 @@ static void ack_schedule(void) {
 
     n = packet(p, 2, 2000, 0);
     assert(hb_receiver_feed(&r, p, n, 289, &next) == HB_COMPLETE);
-    assert(hb_prepare_frame_ack(next, 289, ack, sizeof(ack)) == 48);
+    assert(hb_prepare_frame_ack(next, 289, ack, sizeof(ack), HB_FRAME_ACK_STANDARD) == 48);
     assert(ack[40] == HB_ACK_COMPLETE);
 
     n = packet(p, 3, 2000, 0);
     assert(hb_receiver_feed(&r, p, n, 295, &next) == HB_STORED);
     hb_receiver_expire(&r, 796);
     assert(hb_receiver_ack_due(&r, next, 796));
-    assert(hb_prepare_frame_ack(next, 796, ack, sizeof(ack)) == 48);
+    assert(hb_prepare_frame_ack(next, 796, ack, sizeof(ack), HB_FRAME_ACK_STANDARD) == 48);
     assert(ack[40] == HB_ACK_DROP);
     assert(!hb_receiver_ack_due(&r, next, 816));
     assert(hb_receiver_ack_due(&r, next, 876));
     hb_receiver_reset(&r);
+}
+
+static void b_neutral_ack(void) {
+    HBFrame frame = {0};
+    frame.info.sequence = 44;
+    frame.info.count = 9;
+    frame.status = HB_ACK_COMPLETE;
+    uint8_t ack[HB_ACK_MAX_SIZE];
+    // Capture packet 938, with the unneeded earlier-frame field at 12 left zero.
+    const uint8_t complete[124] = {
+        0xef, 2, 124, 0, 2, 2, 0, 1, 2,
+        [16] = 5, [18] = 0x33, 0x80, 0x80, 0, 0x88,
+        [80] = 0, 0, 0x19, 0x32, 8, 0x18, 0, 0,
+        [88] = 44, [96] = 1, [100] = 20, [104] = 0xff, 0xff, 0xff, 0xff,
+        [108] = 45, [116] = 3, [120] = 16,
+    };
+    assert(hb_prepare_frame_ack(&frame, 10, ack, sizeof(complete)-1, HB_FRAME_ACK_B_NEUTRAL) == 0);
+    assert(hb_prepare_frame_ack(&frame, 11, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL) == sizeof(complete));
+    assert(memcmp(ack, complete, sizeof(complete)) == 0);
+    assert(frame.last_ack_ms == 11);
+
+    assert(hb_prepare_frame_ack(&frame, 12, ack, sizeof(ack), HB_FRAME_ACK_B) == sizeof(complete));
+    const uint8_t control_off[10] = {8};
+    assert(memcmp(ack + 16, control_off, sizeof(control_off)) == 0);
+    assert(memcmp(ack + 26, complete + 26, sizeof(complete) - 26) == 0);
+
+    frame.status = HB_ACK_PARTIAL;
+    frame.bitmap[0] = 1;
+    assert(hb_prepare_frame_ack(&frame, 22, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL) == 108);
+    const uint8_t control_on[7] = {5, 0, 0x33, 0x80, 0x80, 0, 0x88};
+    assert(memcmp(ack + 16, control_on, sizeof(control_on)) == 0);
+    assert(ack[8] == 1 && ack[96] == HB_ACK_PARTIAL && ack[100] == 20);
+    assert(ack[104] == 1 && ack[105] == 0xfe && ack[106] == 0xff && ack[107] == 0xff);
+
+    frame.status = HB_ACK_DROP;
+    assert(hb_prepare_frame_ack(&frame, 23, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL) == 104);
+    assert(ack[8] == 1 && ack[96] == HB_ACK_DROP && ack[100] == 16);
+
+    frame.status = HB_ACK_COMPLETE;
+    frame.info.count = HB_MAX_FRAGMENTS;
+    assert(hb_prepare_frame_ack(&frame, 25, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL) == sizeof(ack));
+    assert(ack[8] == 2 && ack[100] == 80 && ack[sizeof(ack) - 4] == 16);
 }
 
 static void boundaries(void) {
@@ -147,7 +189,7 @@ static void boundaries(void) {
     hb_receiver_reset(&r);
 }
 int main(void) {
-    commands_and_ack(); reassembly(); ack_schedule(); boundaries();
+    commands_and_ack(); reassembly(); ack_schedule(); b_neutral_ack(); boundaries();
     puts("HiBooster wire / reassembly / malformed input tests passed");
     return 0;
 }

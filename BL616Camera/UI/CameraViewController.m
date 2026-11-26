@@ -8,7 +8,7 @@
     HBUDPClient *_client;
     JPEGRenderer *_renderer;
     UITextField *_host, *_remotePort, *_localPort;
-    UIButton *_connect, *_disconnect, *_start, *_stop;
+    UIButton *_connect, *_disconnect, *_start, *_stop, *_neutralTXTest;
     UIButton *_controlsToggle;
     UIVisualEffectView *_controlsPanel;
     UILabel *_status, *_statistics;
@@ -124,6 +124,9 @@
         row.distribution = UIStackViewDistributionFillEqually; row.spacing = 12;
         [stack addArrangedSubview:row];
     }
+    _neutralTXTest = [self button:@"开启 B 固件 TX 中立测试" action:@selector(neutralTXTapped)];
+    _neutralTXTest.accessibilityIdentifier = @"neutralTXTest";
+    [stack addArrangedSubview:_neutralTXTest];
     _status = [self label:@"未连接" size:15];
     _status.accessibilityIdentifier = @"connectionStatus";
     _statistics = [self label:@"本地监听：—\nUDP 收包：0 · 字节：0\n有效分片：0 · 完整帧：0" size:13];
@@ -217,6 +220,16 @@
 - (void)disconnectTapped { [_client disconnect]; }
 - (void)startTapped { [_client startVideo]; }
 - (void)stopTapped { [_client stopVideo]; }
+- (void)neutralTXTapped {
+    [self updateNeutralTXTest:!_neutralTXTest.selected];
+}
+- (void)updateNeutralTXTest:(BOOL)enabled {
+    _neutralTXTest.selected = enabled;
+    UIButtonConfiguration *configuration = _neutralTXTest.configuration;
+    configuration.title = enabled ? @"停止 B 固件 TX 中立测试" : @"开启 B 固件 TX 中立测试";
+    _neutralTXTest.configuration = configuration;
+    [_client setNeutralTXTestEnabled:enabled];
+}
 - (void)hideKeyboard { [self.view endEditing:YES]; }
 - (void)backgrounded:(NSNotification *)notification { (void)notification; [_client disconnect]; }
 - (void)updateControls:(HBClientState)state {
@@ -226,6 +239,8 @@
     _disconnect.enabled = !editable && state != HBClientDisconnecting;
     _start.enabled = state == HBClientReady;
     _stop.enabled = state == HBClientReady || state == HBClientStarting || state == HBClientStreaming;
+    _neutralTXTest.enabled = state == HBClientStreaming;
+    if (!_neutralTXTest.enabled && _neutralTXTest.selected) [self updateNeutralTXTest:NO];
 }
 - (void)client:(HBUDPClient *)client didUpdateStatus:(NSDictionary<NSString *,id> *)status {
     (void)client;

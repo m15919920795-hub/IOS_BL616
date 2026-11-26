@@ -11,6 +11,7 @@
 @property(nonatomic, strong) GCDAsyncUdpSocket *imageSender;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, XCTestExpectation *> *states;
 @property(nonatomic, strong) XCTestExpectation *startReceived, *stopReceived, *frameReceived, *ackReceived;
+@property(nonatomic, strong) XCTestExpectation *neutralAckReceived, *controlOffAckReceived;
 @property(nonatomic, strong) NSData *fixture;
 @property(nonatomic) uint16_t clientPort;
 @property(nonatomic) BOOL sendFrame;
@@ -73,6 +74,24 @@
     XCTAssertTrue([probe bindToPort:self.clientPort error:&error], @"Port not released: %@",error);
     [probe close];
 }
+- (void)testNeutralTXTestTogglesControlDuringPlayback {
+    [self connect];
+    self.frameReceived = [self expectationWithDescription:@"JPEG reassembled for neutral test"];
+    self.ackReceived = [self expectationWithDescription:@"standard ACK before enabling test"];
+    self.sendFrame = YES;
+    [self.client startVideo];
+    [self waitForExpectations:@[self.frameReceived, self.ackReceived] timeout:4];
+
+    self.neutralAckReceived = [self expectationWithDescription:@"B ACK carries neutral TX payload"];
+    [self.client setNeutralTXTestEnabled:YES];
+    [self waitForExpectations:@[self.neutralAckReceived] timeout:2];
+
+    self.controlOffAckReceived = [self expectationWithDescription:@"B ACK omits neutral TX payload after stopping test"];
+    [self.client setNeutralTXTestEnabled:NO];
+    [self waitForExpectations:@[self.controlOffAckReceived] timeout:2];
+    XCTAssertEqual([self.latestStatus[@"state"] integerValue], HBClientStreaming);
+}
+
 - (void)testDisconnectCancelsPendingStart {
     [self connect];
     self.startReceived = [self expectationWithDescription:@"no delayed START"];
@@ -172,6 +191,22 @@
         }
     } else if (data.length == 4 && memcmp(p,"\xef\x01\x04\x00",4) == 0) {
         [self.stopReceived fulfill]; self.stopReceived = nil;
+    } else if (data.length == 124 && p[0] == 0xef && p[1] == 2) {
+        XCTAssertEqual(sock, self.server);
+        XCTAssertEqual(p[8], 2);
+        XCTAssertEqual(p[88], self.frameSequence);
+        XCTAssertEqual(p[96], 1);
+        XCTAssertEqual(p[108], self.frameSequence + 1);
+        XCTAssertEqual(p[116], 3);
+        if (p[16] == 5) {
+            const uint8_t expected[7] = {5, 0, 0x33, 0x80, 0x80, 0, 0x88};
+            XCTAssertEqual(memcmp(p + 16, expected, sizeof(expected)), 0);
+            [self.neutralAckReceived fulfill]; self.neutralAckReceived = nil;
+        } else {
+            const uint8_t expected[10] = {8};
+            XCTAssertEqual(memcmp(p + 16, expected, sizeof(expected)), 0);
+            [self.controlOffAckReceived fulfill]; self.controlOffAckReceived = nil;
+        }
     } else if (data.length == 48 && p[0] == 0xef && p[1] == 2 && p[8] == 1 && p[40] == 1) {
         XCTAssertEqual(sock, self.server);
         uint64_t sequence = 0;

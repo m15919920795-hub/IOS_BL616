@@ -9,7 +9,9 @@ enum { HB_HEADER_SIZE = 56, HB_FRAGMENT_SIZE = 1024,
        HB_MAX_FRAME_SIZE = 512 * 1024, HB_MAX_FRAGMENTS = 512,
        HB_BITMAP_SIZE = HB_MAX_FRAGMENTS / 8, HB_FRAME_SLOTS = 4,
        HB_FRAME_TIMEOUT_MS = 500, HB_ACK_INTERVAL_MS = 20,
-       HB_ACK_ADVANCE_RETRY_MS = 80 };
+       HB_ACK_ADVANCE_RETRY_MS = 80, HB_B_ACK_HEADER_SIZE = 88,
+       HB_ACK_ITEM_HEADER_SIZE = 16,
+       HB_ACK_MAX_SIZE = HB_B_ACK_HEADER_SIZE + 2 * HB_ACK_ITEM_HEADER_SIZE + HB_BITMAP_SIZE };
 
 typedef enum { HB_ACK_PARTIAL = 0, HB_ACK_COMPLETE = 1, HB_ACK_DROP = 2 } HBAckStatus;
 typedef struct {
@@ -51,7 +53,9 @@ HBResult hb_receiver_feed(HBReceiver *receiver, const uint8_t *data, size_t size
                           uint64_t now_ms, HBFrame **frame);
 void hb_receiver_expire(HBReceiver *receiver, uint64_t now_ms);
 bool hb_receiver_ack_due(const HBReceiver *receiver, const HBFrame *frame, uint64_t now_ms);
-size_t hb_prepare_frame_ack(HBFrame *frame, uint64_t now_ms, uint8_t *out, size_t capacity);
+typedef enum { HB_FRAME_ACK_STANDARD, HB_FRAME_ACK_B, HB_FRAME_ACK_B_NEUTRAL } HBFrameAckFormat;
+size_t hb_prepare_frame_ack(HBFrame *frame, uint64_t now_ms, uint8_t *out, size_t capacity,
+                            HBFrameAckFormat format);
 /* After copying a completed JPEG, keep the COMPLETE tombstone for retransmits. */
 void hb_frame_release_payload(HBFrame *frame);
 

@@ -18,5 +18,6 @@ typedef NS_ENUM(NSInteger, HBClientState) {
 - (void)disconnect;
 - (void)startVideo;
 - (void)stopVideo;
+- (void)setNeutralTXTestEnabled:(BOOL)enabled;
 @end
 NS_ASSUME_NONNULL_END

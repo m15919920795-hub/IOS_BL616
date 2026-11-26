@@ -12,6 +12,7 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     NSData *_commandAddress;
     NSString *_deviceHost, *_lastSource, *_firstPacket;
     HBReceiver _receiver;
+    HBFrameAckFormat _ackFormat;
     HBClientState _state;
     uint64_t _generation, _startAt, _startDeadline, _lastStart, _stopUntil;
     uint64_t _lastFrame, _lastPublished, _lastDelivered;
@@ -54,6 +55,7 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
 }
 
 - (void)closeSocket {
+    _ackFormat = HB_FRAME_ACK_STANDARD;
     [_socket setDelegate:nil];
     [_socket close];
     _socket = nil;
@@ -152,6 +154,7 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
 }
 
 - (void)stopOnQueue:(NSString *)message {
+    _ackFormat = HB_FRAME_ACK_STANDARD;
     _generation++;
     _state = HBClientStopping;
     [self sendCommand:NO]; [self sendCommand:NO]; [self sendCommand:NO];
@@ -188,9 +191,20 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     });
 }
 
+- (void)setNeutralTXTestEnabled:(BOOL)enabled {
+    dispatch_async(_queue, ^{
+        if (enabled && self->_state == HBClientStreaming) {
+            self->_ackFormat = HB_FRAME_ACK_B_NEUTRAL;
+        } else if (!enabled && self->_ackFormat == HB_FRAME_ACK_B_NEUTRAL) {
+            // Keep the same ACK layout for the rest of this playback comparison.
+            self->_ackFormat = HB_FRAME_ACK_B;
+        }
+    });
+}
+
 - (void)ackFrame:(HBFrame *)frame at:(uint64_t)now {
-    uint8_t bytes[48 + HB_BITMAP_SIZE];
-    size_t length = hb_prepare_frame_ack(frame, now, bytes, sizeof(bytes));
+    uint8_t bytes[HB_ACK_MAX_SIZE];
+    size_t length = hb_prepare_frame_ack(frame, now, bytes, sizeof(bytes), _ackFormat);
     if (length) [_socket sendData:[NSData dataWithBytes:bytes length:length] toAddress:_commandAddress
                      withTimeout:0.3 tag:3];
 }
