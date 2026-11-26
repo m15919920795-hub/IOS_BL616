@@ -12,6 +12,7 @@
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, XCTestExpectation *> *states;
 @property(nonatomic, strong) XCTestExpectation *startReceived, *stopReceived, *frameReceived, *ackReceived;
 @property(nonatomic, strong) XCTestExpectation *neutralAckReceived, *controlOffAckReceived;
+@property(nonatomic) uint32_t neutralControlSequence;
 @property(nonatomic, strong) NSData *fixture;
 @property(nonatomic) uint16_t clientPort;
 @property(nonatomic) BOOL sendFrame;
@@ -82,7 +83,7 @@
     [self.client startVideo];
     [self waitForExpectations:@[self.frameReceived, self.ackReceived] timeout:4];
 
-    self.neutralAckReceived = [self expectationWithDescription:@"B ACK carries neutral TX payload"];
+    self.neutralAckReceived = [self expectationWithDescription:@"two B ACKs carry neutral TX payloads"];
     [self.client setNeutralTXTestEnabled:YES];
     [self waitForExpectations:@[self.neutralAckReceived] timeout:2];
 
@@ -198,10 +199,16 @@
         XCTAssertEqual(p[96], 1);
         XCTAssertEqual(p[108], self.frameSequence + 1);
         XCTAssertEqual(p[116], 3);
+        uint32_t controlSequence = 0;
+        for (unsigned i = 0; i < 4; i++) controlSequence |= (uint32_t)p[12 + i] << (8 * i);
+        XCTAssertEqual(controlSequence, self.neutralControlSequence + 1);
         if (p[16] == 5) {
             const uint8_t expected[7] = {5, 0, 0x33, 0x80, 0x80, 0, 0x88};
             XCTAssertEqual(memcmp(p + 16, expected, sizeof(expected)), 0);
-            [self.neutralAckReceived fulfill]; self.neutralAckReceived = nil;
+            self.neutralControlSequence = controlSequence;
+            if (controlSequence == 2) {
+                [self.neutralAckReceived fulfill]; self.neutralAckReceived = nil;
+            }
         } else {
             const uint8_t expected[10] = {8};
             XCTAssertEqual(memcmp(p + 16, expected, sizeof(expected)), 0);

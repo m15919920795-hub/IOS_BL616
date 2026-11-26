@@ -55,7 +55,7 @@ void hb_receiver_expire(HBReceiver *receiver, uint64_t now_ms);
 bool hb_receiver_ack_due(const HBReceiver *receiver, const HBFrame *frame, uint64_t now_ms);
 typedef enum { HB_FRAME_ACK_STANDARD, HB_FRAME_ACK_B, HB_FRAME_ACK_B_NEUTRAL } HBFrameAckFormat;
 size_t hb_prepare_frame_ack(HBFrame *frame, uint64_t now_ms, uint8_t *out, size_t capacity,
-                            HBFrameAckFormat format);
+                            HBFrameAckFormat format, uint32_t control_sequence);
 /* After copying a completed JPEG, keep the COMPLETE tombstone for retransmits. */
 void hb_frame_release_payload(HBFrame *frame);
 
