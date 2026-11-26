@@ -105,4 +105,16 @@ App 随图传 ACK 发固定中立帧 `33 80 80 00 88`。B 固件应从控制 TX 
 偏移 16–17 为 `05 00`，偏移 18–22 为中立帧。ACK 条目从偏移 88 开始，包内首个
 条目包含当前帧序号，完成 ACK 同时携带下一帧的状态 3 条目。
 
-当前版本提供固定中立测试。小车方向与油门输入、A 固件的串口透传以及升级消息留待后续实现。
+播放期间可通过 `HBUDPClient` 的 `setTXControlData:` 替换控制数据。
+传入 1–62 个原始字节，App 会复制数据并从下一条 ACK 开始重复附带该值。传
+`nil` 停止附带，结束播放也会清除该值。接口在非播放状态设置非空数据或
+长度无效时返回 `NO`。串口设备需支持调用方传入的帧格式。
+
+```objc
+const uint8_t frame[] = {0x33, 0xAA, 0x80, 0x00, 0x88};
+BOOL accepted = [client setTXControlData:[NSData dataWithBytes:frame length:sizeof(frame)]];
+// Stop carrying control data when requested.
+[client setTXControlData:nil];
+```
+
+现有中立测试按钮通过同一个接口设置 `33 80 80 00 88`。

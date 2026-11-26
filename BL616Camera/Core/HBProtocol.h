@@ -10,6 +10,8 @@ enum { HB_HEADER_SIZE = 56, HB_FRAGMENT_SIZE = 1024,
        HB_BITMAP_SIZE = HB_MAX_FRAGMENTS / 8, HB_FRAME_SLOTS = 4,
        HB_FRAME_TIMEOUT_MS = 500, HB_ACK_INTERVAL_MS = 20,
        HB_ACK_ADVANCE_RETRY_MS = 80, HB_B_ACK_HEADER_SIZE = 88,
+       HB_B_CONTROL_OFFSET = 18, HB_B_ACK_SUFFIX_OFFSET = 80,
+       HB_B_CONTROL_MAX_SIZE = HB_B_ACK_SUFFIX_OFFSET - HB_B_CONTROL_OFFSET,
        HB_ACK_ITEM_HEADER_SIZE = 16,
        HB_ACK_MAX_SIZE = HB_B_ACK_HEADER_SIZE + 2 * HB_ACK_ITEM_HEADER_SIZE + HB_BITMAP_SIZE };
 
@@ -53,9 +55,15 @@ HBResult hb_receiver_feed(HBReceiver *receiver, const uint8_t *data, size_t size
                           uint64_t now_ms, HBFrame **frame);
 void hb_receiver_expire(HBReceiver *receiver, uint64_t now_ms);
 bool hb_receiver_ack_due(const HBReceiver *receiver, const HBFrame *frame, uint64_t now_ms);
-typedef enum { HB_FRAME_ACK_STANDARD, HB_FRAME_ACK_B, HB_FRAME_ACK_B_NEUTRAL } HBFrameAckFormat;
+typedef struct {
+    const uint8_t *bytes;
+    size_t length;
+    uint32_t sequence;
+} HBAckControl;
+
+/* A null control selects the standard ACK layout. */
 size_t hb_prepare_frame_ack(HBFrame *frame, uint64_t now_ms, uint8_t *out, size_t capacity,
-                            HBFrameAckFormat format, uint32_t control_sequence);
+                            const HBAckControl *control);
 /* After copying a completed JPEG, keep the COMPLETE tombstone for retransmits. */
 void hb_frame_release_payload(HBFrame *frame);
 

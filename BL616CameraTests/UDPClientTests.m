@@ -11,7 +11,7 @@
 @property(nonatomic, strong) GCDAsyncUdpSocket *imageSender;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, XCTestExpectation *> *states;
 @property(nonatomic, strong) XCTestExpectation *startReceived, *stopReceived, *frameReceived, *ackReceived;
-@property(nonatomic, strong) XCTestExpectation *neutralAckReceived, *controlOffAckReceived;
+@property(nonatomic, strong) XCTestExpectation *neutralAckReceived, *customAckReceived, *controlOffAckReceived;
 @property(nonatomic) uint32_t neutralControlSequence;
 @property(nonatomic, strong) NSData *fixture;
 @property(nonatomic) uint16_t clientPort;
@@ -75,8 +75,11 @@
     XCTAssertTrue([probe bindToPort:self.clientPort error:&error], @"Port not released: %@",error);
     [probe close];
 }
-- (void)testNeutralTXTestTogglesControlDuringPlayback {
+- (void)testTXControlDataUpdatesAndStopsDuringPlayback {
     [self connect];
+    const uint8_t custom[] = {0x33, 0xaa, 0x80, 0x00, 0x88};
+    NSMutableData *payload = [NSMutableData dataWithBytes:custom length:sizeof(custom)];
+    XCTAssertFalse([self.client setTXControlData:payload]);
     self.frameReceived = [self expectationWithDescription:@"JPEG reassembled for neutral test"];
     self.ackReceived = [self expectationWithDescription:@"standard ACK before enabling test"];
     self.sendFrame = YES;
@@ -87,8 +90,14 @@
     [self.client setNeutralTXTestEnabled:YES];
     [self waitForExpectations:@[self.neutralAckReceived] timeout:2];
 
-    self.controlOffAckReceived = [self expectationWithDescription:@"B ACK omits neutral TX payload after stopping test"];
-    [self.client setNeutralTXTestEnabled:NO];
+    XCTAssertFalse([self.client setTXControlData:[NSData data]]);
+    self.customAckReceived = [self expectationWithDescription:@"B ACK carries copied custom TX payload"];
+    XCTAssertTrue([self.client setTXControlData:payload]);
+    [payload resetBytesInRange:NSMakeRange(0, payload.length)];
+    [self waitForExpectations:@[self.customAckReceived] timeout:2];
+
+    self.controlOffAckReceived = [self expectationWithDescription:@"B ACK omits TX payload after stopping test"];
+    XCTAssertTrue([self.client setTXControlData:nil]);
     [self waitForExpectations:@[self.controlOffAckReceived] timeout:2];
     XCTAssertEqual([self.latestStatus[@"state"] integerValue], HBClientStreaming);
 }
@@ -203,11 +212,16 @@
         for (unsigned i = 0; i < 4; i++) controlSequence |= (uint32_t)p[12 + i] << (8 * i);
         XCTAssertEqual(controlSequence, self.neutralControlSequence + 1);
         if (p[16] == 5) {
-            const uint8_t expected[7] = {5, 0, 0x33, 0x80, 0x80, 0, 0x88};
-            XCTAssertEqual(memcmp(p + 16, expected, sizeof(expected)), 0);
+            const uint8_t neutral[7] = {5, 0, 0x33, 0x80, 0x80, 0, 0x88};
+            const uint8_t custom[7] = {5, 0, 0x33, 0xaa, 0x80, 0, 0x88};
             self.neutralControlSequence = controlSequence;
-            if (controlSequence == 2) {
-                [self.neutralAckReceived fulfill]; self.neutralAckReceived = nil;
+            if (memcmp(p + 16, neutral, sizeof(neutral)) == 0) {
+                if (controlSequence == 2) {
+                    [self.neutralAckReceived fulfill]; self.neutralAckReceived = nil;
+                }
+            } else {
+                XCTAssertEqual(memcmp(p + 16, custom, sizeof(custom)), 0);
+                [self.customAckReceived fulfill]; self.customAckReceived = nil;
             }
         } else {
             const uint8_t expected[10] = {8};

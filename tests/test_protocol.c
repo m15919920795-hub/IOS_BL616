@@ -76,20 +76,20 @@ static void ack_schedule(void) {
 
     n = packet(p, 1, 2000, 1);
     assert(hb_receiver_feed(&r, p, n, 105, &first) == HB_COMPLETE);
-    assert(hb_prepare_frame_ack(first, 105, ack, sizeof(ack), HB_FRAME_ACK_STANDARD, 0) == 48);
+    assert(hb_prepare_frame_ack(first, 105, ack, sizeof(ack), NULL) == 48);
     assert(ack[40] == HB_ACK_COMPLETE);
     hb_frame_release_payload(first);
     assert(!hb_receiver_ack_due(&r, first, 125));
     assert(!hb_receiver_ack_due(&r, first, 184));
     assert(hb_receiver_ack_due(&r, first, 185));
-    assert(hb_prepare_frame_ack(first, 185, ack, sizeof(ack), HB_FRAME_ACK_STANDARD, 0) == 48);
+    assert(hb_prepare_frame_ack(first, 185, ack, sizeof(ack), NULL) == 48);
     assert(!hb_receiver_ack_due(&r, first, 205));
 
     for (uint64_t t = 190; t <= 192; t++)
         assert(hb_receiver_feed(&r, p, n, t, &first) == HB_DUPLICATE);
     assert(!hb_receiver_ack_due(&r, first, 204));
     assert(hb_receiver_ack_due(&r, first, 205));
-    assert(hb_prepare_frame_ack(first, 205, ack, sizeof(ack), HB_FRAME_ACK_STANDARD, 0) == 48);
+    assert(hb_prepare_frame_ack(first, 205, ack, sizeof(ack), NULL) == 48);
     assert(!hb_receiver_ack_due(&r, first, 225));
 
     /* The last fragment can arrive first. A missing earlier one still gets a grace period. */
@@ -98,7 +98,7 @@ static void ack_schedule(void) {
     assert(hb_receiver_feed(&r, p, n, 242, &next) == HB_DUPLICATE);
     assert(!hb_receiver_ack_due(&r, next, 249));
     assert(hb_receiver_ack_due(&r, next, 250));
-    assert(hb_prepare_frame_ack(next, 250, ack, sizeof(ack), HB_FRAME_ACK_STANDARD, 0) == 49);
+    assert(hb_prepare_frame_ack(next, 250, ack, sizeof(ack), NULL) == 49);
     assert(ack[40] == HB_ACK_PARTIAL && ack[48] == 2);
     assert(!hb_receiver_ack_due(&r, next, 269));
     assert(hb_receiver_ack_due(&r, next, 270));
@@ -106,14 +106,14 @@ static void ack_schedule(void) {
 
     n = packet(p, 2, 2000, 0);
     assert(hb_receiver_feed(&r, p, n, 289, &next) == HB_COMPLETE);
-    assert(hb_prepare_frame_ack(next, 289, ack, sizeof(ack), HB_FRAME_ACK_STANDARD, 0) == 48);
+    assert(hb_prepare_frame_ack(next, 289, ack, sizeof(ack), NULL) == 48);
     assert(ack[40] == HB_ACK_COMPLETE);
 
     n = packet(p, 3, 2000, 0);
     assert(hb_receiver_feed(&r, p, n, 295, &next) == HB_STORED);
     hb_receiver_expire(&r, 796);
     assert(hb_receiver_ack_due(&r, next, 796));
-    assert(hb_prepare_frame_ack(next, 796, ack, sizeof(ack), HB_FRAME_ACK_STANDARD, 0) == 48);
+    assert(hb_prepare_frame_ack(next, 796, ack, sizeof(ack), NULL) == 48);
     assert(ack[40] == HB_ACK_DROP);
     assert(!hb_receiver_ack_due(&r, next, 816));
     assert(hb_receiver_ack_due(&r, next, 876));
@@ -126,6 +126,9 @@ static void b_neutral_ack(void) {
     frame.info.count = 9;
     frame.status = HB_ACK_COMPLETE;
     uint8_t ack[HB_ACK_MAX_SIZE];
+    const uint8_t neutral[] = {0x33, 0x80, 0x80, 0x00, 0x88};
+    HBAckControl control = { .bytes = neutral, .length = sizeof(neutral), .sequence = 12 };
+    const HBAckControl off = { .sequence = 13 };
     // Capture packet 938 from the A2 + B firmware test.
     const uint8_t complete[124] = {
         0xef, 2, 124, 0, 2, 2, 0, 1, 2,
@@ -134,12 +137,12 @@ static void b_neutral_ack(void) {
         [88] = 44, [96] = 1, [100] = 20, [104] = 0xff, 0xff, 0xff, 0xff,
         [108] = 45, [116] = 3, [120] = 16,
     };
-    assert(hb_prepare_frame_ack(&frame, 10, ack, sizeof(complete)-1, HB_FRAME_ACK_B_NEUTRAL, 12) == 0);
-    assert(hb_prepare_frame_ack(&frame, 11, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL, 12) == sizeof(complete));
+    assert(hb_prepare_frame_ack(&frame, 10, ack, sizeof(complete)-1, &control) == 0);
+    assert(hb_prepare_frame_ack(&frame, 11, ack, sizeof(ack), &control) == sizeof(complete));
     assert(memcmp(ack, complete, sizeof(complete)) == 0);
     assert(frame.last_ack_ms == 11);
 
-    assert(hb_prepare_frame_ack(&frame, 12, ack, sizeof(ack), HB_FRAME_ACK_B, 13) == sizeof(complete));
+    assert(hb_prepare_frame_ack(&frame, 12, ack, sizeof(ack), &off) == sizeof(complete));
     assert(ack[12] == 13);
     const uint8_t control_off[10] = {8};
     assert(memcmp(ack + 16, control_off, sizeof(control_off)) == 0);
@@ -147,20 +150,43 @@ static void b_neutral_ack(void) {
 
     frame.status = HB_ACK_PARTIAL;
     frame.bitmap[0] = 1;
-    assert(hb_prepare_frame_ack(&frame, 22, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL, 12) == 108);
+    assert(hb_prepare_frame_ack(&frame, 22, ack, sizeof(ack), &control) == 108);
     const uint8_t control_on[7] = {5, 0, 0x33, 0x80, 0x80, 0, 0x88};
     assert(memcmp(ack + 16, control_on, sizeof(control_on)) == 0);
     assert(ack[8] == 1 && ack[96] == HB_ACK_PARTIAL && ack[100] == 20);
     assert(ack[104] == 1 && ack[105] == 0xfe && ack[106] == 0xff && ack[107] == 0xff);
 
     frame.status = HB_ACK_DROP;
-    assert(hb_prepare_frame_ack(&frame, 23, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL, 12) == 104);
+    assert(hb_prepare_frame_ack(&frame, 23, ack, sizeof(ack), &control) == 104);
     assert(ack[8] == 1 && ack[96] == HB_ACK_DROP && ack[100] == 16);
 
     frame.status = HB_ACK_COMPLETE;
     frame.info.count = HB_MAX_FRAGMENTS;
-    assert(hb_prepare_frame_ack(&frame, 25, ack, sizeof(ack), HB_FRAME_ACK_B_NEUTRAL, 12) == sizeof(ack));
+    assert(hb_prepare_frame_ack(&frame, 25, ack, sizeof(ack), &control) == sizeof(ack));
     assert(ack[8] == 2 && ack[100] == 80 && ack[sizeof(ack) - 4] == 16);
+
+    const uint8_t steer[] = {0x33, 0xaa, 0x80, 0x00, 0x88};
+    control = (HBAckControl){ .bytes = steer, .length = sizeof(steer), .sequence = 14 };
+    frame.info.count = 9;
+    assert(hb_prepare_frame_ack(&frame, 26, ack, sizeof(ack), &control) == 124);
+    assert(ack[12] == 14 && ack[16] == sizeof(steer));
+    assert(memcmp(ack + HB_B_CONTROL_OFFSET, steer, sizeof(steer)) == 0);
+
+    const uint8_t eight[] = {0x66, 0x80, 0x80, 0x80, 0x80, 0x40, 0x40, 0x99};
+    control = (HBAckControl){ .bytes = eight, .length = sizeof(eight), .sequence = 15 };
+    assert(hb_prepare_frame_ack(&frame, 27, ack, sizeof(ack), &control) == 124);
+    assert(ack[16] == sizeof(eight) && memcmp(ack + HB_B_CONTROL_OFFSET, eight, sizeof(eight)) == 0);
+
+    uint8_t max[HB_B_CONTROL_MAX_SIZE + 1];
+    memset(max, 0xa5, sizeof(max));
+    control = (HBAckControl){ .bytes = max, .length = HB_B_CONTROL_MAX_SIZE, .sequence = 16 };
+    assert(hb_prepare_frame_ack(&frame, 28, ack, sizeof(ack), &control) == 124);
+    assert(memcmp(ack + HB_B_CONTROL_OFFSET, max, control.length) == 0);
+    assert(memcmp(ack + HB_B_ACK_SUFFIX_OFFSET, complete + HB_B_ACK_SUFFIX_OFFSET, 8) == 0);
+    control.length++;
+    assert(hb_prepare_frame_ack(&frame, 29, ack, sizeof(ack), &control) == 0);
+    control = (HBAckControl){ .length = 1 };
+    assert(hb_prepare_frame_ack(&frame, 30, ack, sizeof(ack), &control) == 0);
 }
 
 static void boundaries(void) {

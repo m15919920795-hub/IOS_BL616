@@ -12,7 +12,8 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     NSData *_commandAddress;
     NSString *_deviceHost, *_lastSource, *_firstPacket;
     HBReceiver _receiver;
-    HBFrameAckFormat _ackFormat;
+    BOOL _usesBAcks;
+    NSData *_txControlData;
     uint32_t _bControlSequence;
     HBClientState _state;
     uint64_t _generation, _startAt, _startDeadline, _lastStart, _stopUntil;
@@ -56,7 +57,8 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
 }
 
 - (void)closeSocket {
-    _ackFormat = HB_FRAME_ACK_STANDARD;
+    _usesBAcks = NO;
+    _txControlData = nil;
     _bControlSequence = 0;
     [_socket setDelegate:nil];
     [_socket close];
@@ -156,7 +158,8 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
 }
 
 - (void)stopOnQueue:(NSString *)message {
-    _ackFormat = HB_FRAME_ACK_STANDARD;
+    _usesBAcks = NO;
+    _txControlData = nil;
     _bControlSequence = 0;
     _generation++;
     _state = HBClientStopping;
@@ -194,24 +197,41 @@ static uint64_t HBNow(void) { return (uint64_t)(NSProcessInfo.processInfo.system
     });
 }
 
-- (void)setNeutralTXTestEnabled:(BOOL)enabled {
-    dispatch_async(_queue, ^{
-        if (enabled && self->_state == HBClientStreaming) {
-            self->_ackFormat = HB_FRAME_ACK_B_NEUTRAL;
-        } else if (!enabled && self->_ackFormat == HB_FRAME_ACK_B_NEUTRAL) {
+- (BOOL)setTXControlData:(NSData *)data {
+    if (data && (!data.length || data.length > HB_B_CONTROL_MAX_SIZE)) return NO;
+    NSData *payload = [data copy];
+    __block BOOL accepted = YES;
+    dispatch_sync(_queue, ^{
+        if (payload && self->_state != HBClientStreaming) {
+            accepted = NO;
+            return;
+        }
+        if (payload) self->_usesBAcks = YES;
+        if (!payload && self->_txControlData) {
             // A single control sequence update marks the end of control.
             self->_bControlSequence++;
-            self->_ackFormat = HB_FRAME_ACK_B;
         }
+        self->_txControlData = payload;
     });
+    return accepted;
+}
+
+- (void)setNeutralTXTestEnabled:(BOOL)enabled {
+    static const uint8_t neutral[] = {0x33, 0x80, 0x80, 0x00, 0x88};
+    NSData *payload = enabled ? [NSData dataWithBytes:neutral length:sizeof(neutral)] : nil;
+    [self setTXControlData:payload];
 }
 
 - (void)ackFrame:(HBFrame *)frame at:(uint64_t)now {
     uint8_t bytes[HB_ACK_MAX_SIZE];
-    uint32_t sequence = _bControlSequence + (_ackFormat == HB_FRAME_ACK_B_NEUTRAL ? 1u : 0u);
-    size_t length = hb_prepare_frame_ack(frame, now, bytes, sizeof(bytes), _ackFormat, sequence);
+    HBAckControl control = {
+        .bytes = _txControlData.bytes,
+        .length = _txControlData.length,
+        .sequence = _bControlSequence + (_txControlData ? 1u : 0u),
+    };
+    size_t length = hb_prepare_frame_ack(frame, now, bytes, sizeof(bytes), _usesBAcks ? &control : NULL);
     if (length) {
-        _bControlSequence = sequence;
+        _bControlSequence = control.sequence;
         [_socket sendData:[NSData dataWithBytes:bytes length:length] toAddress:_commandAddress
               withTimeout:0.3 tag:3];
     }

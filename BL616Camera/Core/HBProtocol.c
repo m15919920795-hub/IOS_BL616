@@ -154,14 +154,13 @@ bool hb_receiver_ack_due(const HBReceiver *r, const HBFrame *f, uint64_t now) {
 }
 
 /* B firmware compatibility from the recorded 108/124-byte ACKs. */
-static size_t write_b_ack(uint8_t *out, size_t capacity, const HBFrame *f, bool neutral,
-                          uint32_t control_sequence) {
-    static const uint8_t neutral_frame[] = {0x33, 0x80, 0x80, 0x00, 0x88};
+static size_t write_b_ack(uint8_t *out, size_t capacity, const HBFrame *f, const HBAckControl *control) {
     static const uint8_t footer[] = {0x00, 0x00, 0x19, 0x32, 0x08, 0x18, 0x00, 0x00};
     const uint64_t seq = f->info.sequence;
     const uint32_t count = f->info.count;
     if (!out || !seq || !count || count > HB_MAX_FRAGMENTS ||
-        f->status < HB_ACK_PARTIAL || f->status > HB_ACK_DROP) return 0;
+        f->status < HB_ACK_PARTIAL || f->status > HB_ACK_DROP ||
+        control->length > HB_B_CONTROL_MAX_SIZE || (control->length && !control->bytes)) return 0;
 
     const bool request_next = f->status == HB_ACK_COMPLETE && seq != UINT64_MAX;
     const size_t bitmap_size = f->status == HB_ACK_DROP ? 0 : 4 * ((count + 31) / 32);
@@ -172,15 +171,15 @@ static size_t write_b_ack(uint8_t *out, size_t capacity, const HBFrame *f, bool 
 
     memset(out, 0, size);
     write_ack_header(out, size, request_next ? 2 : 1);
-    put32(out + 12, control_sequence);
-    if (neutral) {
-        out[16] = sizeof(neutral_frame);
-        memcpy(out + 18, neutral_frame, sizeof(neutral_frame));
+    put32(out + 12, control->sequence);
+    if (control->length) {
+        out[16] = (uint8_t)control->length;
+        memcpy(out + HB_B_CONTROL_OFFSET, control->bytes, control->length);
     } else {
         /* B App sends an all-zero eight-byte control field when control is closed. */
         out[16] = 8;
     }
-    memcpy(out + 80, footer, sizeof(footer));
+    memcpy(out + HB_B_ACK_SUFFIX_OFFSET, footer, sizeof(footer));
 
     uint8_t *item = out + HB_B_ACK_HEADER_SIZE;
     write_ack_item(item, seq, f->status, (uint32_t)item_size);
@@ -197,10 +196,9 @@ static size_t write_b_ack(uint8_t *out, size_t capacity, const HBFrame *f, bool 
 }
 
 size_t hb_prepare_frame_ack(HBFrame *f, uint64_t now, uint8_t *out, size_t capacity,
-                            HBFrameAckFormat format, uint32_t control_sequence) {
-    size_t length = format == HB_FRAME_ACK_STANDARD ?
-        hb_write_ack(out, capacity, f->info.sequence, f->status, f->bitmap, f->info.count) :
-        write_b_ack(out, capacity, f, format == HB_FRAME_ACK_B_NEUTRAL, control_sequence);
+                            const HBAckControl *control) {
+    size_t length = control ? write_b_ack(out, capacity, f, control) :
+        hb_write_ack(out, capacity, f->info.sequence, f->status, f->bitmap, f->info.count);
     if (length) {
         f->last_ack_ms = now;
         f->ack_pending = false;
