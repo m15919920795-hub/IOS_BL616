@@ -71,10 +71,8 @@ static void ack_schedule(void) {
     uint8_t p[1080], ack[112];
     size_t n = packet(p, 1, 2000, 0);
     assert(hb_receiver_feed(&r, p, n, 100, &first) == HB_STORED);
-    assert(hb_receiver_ack_due(&r, first, 101));
-    assert(hb_prepare_frame_ack(first, 101, ack, sizeof(ack)) == 49);
-    assert(ack[40] == HB_ACK_PARTIAL && ack[48] == 1);
-    assert(!hb_receiver_ack_due(&r, first, 120));
+    assert(!hb_receiver_ack_due(&r, first, 100));
+    assert(!hb_receiver_ack_due(&r, first, 104));
 
     n = packet(p, 1, 2000, 1);
     assert(hb_receiver_feed(&r, p, n, 105, &first) == HB_COMPLETE);
@@ -94,17 +92,31 @@ static void ack_schedule(void) {
     assert(hb_prepare_frame_ack(first, 205, ack, sizeof(ack)) == 48);
     assert(!hb_receiver_ack_due(&r, first, 225));
 
-    n = packet(p, 2, 2000, 0);
+    /* The last fragment can arrive first. A missing earlier one still gets a grace period. */
+    n = packet(p, 2, 2000, 1);
     assert(hb_receiver_feed(&r, p, n, 230, &next) == HB_STORED);
+    assert(hb_receiver_feed(&r, p, n, 242, &next) == HB_DUPLICATE);
+    assert(!hb_receiver_ack_due(&r, next, 249));
+    assert(hb_receiver_ack_due(&r, next, 250));
+    assert(hb_prepare_frame_ack(next, 250, ack, sizeof(ack)) == 49);
+    assert(ack[40] == HB_ACK_PARTIAL && ack[48] == 2);
+    assert(!hb_receiver_ack_due(&r, next, 269));
+    assert(hb_receiver_ack_due(&r, next, 270));
     assert(!hb_receiver_ack_due(&r, first, 285));
-    assert(hb_receiver_ack_due(&r, next, 285));
 
-    hb_receiver_expire(&r, 731);
-    assert(hb_receiver_ack_due(&r, next, 731));
-    assert(hb_prepare_frame_ack(next, 731, ack, sizeof(ack)) == 48);
+    n = packet(p, 2, 2000, 0);
+    assert(hb_receiver_feed(&r, p, n, 289, &next) == HB_COMPLETE);
+    assert(hb_prepare_frame_ack(next, 289, ack, sizeof(ack)) == 48);
+    assert(ack[40] == HB_ACK_COMPLETE);
+
+    n = packet(p, 3, 2000, 0);
+    assert(hb_receiver_feed(&r, p, n, 295, &next) == HB_STORED);
+    hb_receiver_expire(&r, 796);
+    assert(hb_receiver_ack_due(&r, next, 796));
+    assert(hb_prepare_frame_ack(next, 796, ack, sizeof(ack)) == 48);
     assert(ack[40] == HB_ACK_DROP);
-    assert(!hb_receiver_ack_due(&r, next, 751));
-    assert(hb_receiver_ack_due(&r, next, 811));
+    assert(!hb_receiver_ack_due(&r, next, 816));
+    assert(hb_receiver_ack_due(&r, next, 876));
     hb_receiver_reset(&r);
 }
 

@@ -135,7 +135,11 @@ bool hb_receiver_ack_due(const HBReceiver *r, const HBFrame *f, uint64_t now) {
     if (!f->used || now < f->last_ack_ms) return false;
     uint64_t elapsed = now - f->last_ack_ms;
     if (elapsed < HB_ACK_INTERVAL_MS) return false;
-    if (f->status == HB_ACK_PARTIAL || f->ack_pending) return true;
+    if (f->status == HB_ACK_PARTIAL) {
+        /* Give ordinary fragments one ACK interval to arrive before requesting repairs. */
+        return now >= f->created_ms && now - f->created_ms >= HB_ACK_INTERVAL_MS;
+    }
+    if (f->ack_pending) return true;
 
     /* Nudge the sender when no fragment for a newer frame has arrived. */
     return f->info.sequence == r->latest_sequence && elapsed >= HB_ACK_ADVANCE_RETRY_MS;
